@@ -1,0 +1,8 @@
+robin_stocks>=3.4
+pyotp>=2.9
+yfinance>=0.2.50
+pandas>=2.2
+python-dotenv>=1.0
+PyYAML>=6.0
+rich>=13.7
+pytest>=8.0
