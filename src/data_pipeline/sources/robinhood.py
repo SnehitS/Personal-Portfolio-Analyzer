@@ -114,7 +114,9 @@ class RobinhoodSource(PortfolioSource):
         return positions
 
     def _fetch_transactions(self) -> list[Transaction]:
-        from robin_stocks.robinhood import get_all_stock_orders, get_dividends, get_symbol_by_url
+        from robin_stocks.robinhood import (
+            get_all_stock_orders, get_bank_transfers, get_dividends, get_symbol_by_url,
+        )
 
         symbols: dict[str, str] = {}
 
@@ -151,6 +153,23 @@ class RobinhoodSource(PortfolioSource):
                 price=_f(div.get("rate")) or 0.0,
                 amount=_f(div.get("amount")) or 0.0,
                 ref=div["id"],
+            ))
+
+        # Transfers started in the app, plus ones pulled from the bank side
+        for transfer in (get_bank_transfers() or []) + (get_bank_transfers("received") or []):
+            if transfer.get("state") != "completed":
+                continue
+            amount = transfer.get("amount")
+            amount = _f(amount.get("amount") if isinstance(amount, dict) else amount) or 0.0
+            deposit = transfer.get("direction") == "deposit"
+            txns.append(Transaction(
+                ticker="",
+                kind="deposit" if deposit else "withdrawal",
+                date=market_date(transfer["created_at"]),
+                quantity=0.0,
+                price=0.0,
+                amount=amount if deposit else -amount,
+                ref=transfer["id"],
             ))
 
         # Order history keeps pre-split share counts and prices

@@ -123,7 +123,8 @@ class OptionPosition:
 
 @dataclass
 class Transaction:
-    """A single account event. `kind` is one of: buy, sell, dividend, split."""
+    """A single account event. `kind` is one of: buy, sell, dividend, split, deposit,
+    withdrawal. Deposits and withdrawals have an empty ticker."""
 
     ticker: str
     kind: str

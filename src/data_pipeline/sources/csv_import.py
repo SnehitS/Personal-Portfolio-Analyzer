@@ -47,6 +47,8 @@ def read_activity_csv(path: Path) -> tuple[list[Transaction], float]:
             amount = parse_money(row.get("Amount", ""))
             net_cash += amount
             kind = TRANS_CODES.get(code)
+            if code == "ACH":
+                kind = "deposit" if amount > 0 else "withdrawal"
             if kind is None:
                 continue
             # The CSV has no IDs. Key on the row's contents, numbered so that two identical

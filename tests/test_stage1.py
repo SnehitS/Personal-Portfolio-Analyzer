@@ -222,3 +222,9 @@ def test_lot_mismatch_flag(tmp_path):
     snap.holdings.append(Holding("MSFT", 3, 300, 400))  # transferred in, no buy on record
     flags = metrics.risk_flags(snap, CFG, date(2026, 1, 1))
     assert any("MSFT: tax lots cover 0 shares but you hold 3" in f for f in flags)
+
+
+def test_csv_records_deposits(tmp_path):
+    txns = _csv_snapshot(tmp_path).transactions
+    [dep] = [t for t in txns if t.kind == "deposit"]
+    assert dep.date == date(2025, 1, 2) and dep.amount == 5000 and dep.ticker == ""
