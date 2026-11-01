@@ -202,3 +202,45 @@ def risk_flags(snap: PortfolioSnapshot, cfg: dict, today: date | None = None) ->
         flags.append(f"{snap.account.cash / snap.total_equity:.0%} of the account is "
                      f"uninvested cash")
     return flags
+
+
+def cash_flows(txns: list[Transaction]) -> list[tuple[date, float]]:
+    """Money moved into (+) or out of (-) the account, oldest first."""
+    return sorted((t.date, t.amount) for t in txns if t.kind in ("deposit", "withdrawal"))
+
+
+def money_weighted_return(flows: list[tuple[date, float]], end_value: float,
+                          end_date: date) -> float | None:
+    """Annualized rate r at which the flows, compounded to end_date, grow to end_value (XIRR)."""
+    if not flows or end_date <= flows[0][0]:
+        return None
+
+    def excess(rate: float) -> float:
+        return sum(amt * (1 + rate) ** ((end_date - d).days / 365) for d, amt in flows) - end_value
+
+    lo, hi = -0.99, 10.0
+    if excess(lo) * excess(hi) > 0:
+        return None
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if excess(lo) * excess(mid) <= 0:
+            hi = mid
+        else:
+            lo = mid
+    return (lo + hi) / 2
+
+
+def benchmark_equivalent(flows: list[tuple[date, float]], closes: pd.Series) -> float | None:
+    """What the account would be worth had every deposit bought the benchmark (and every
+    withdrawal sold it) at the next available close."""
+    closes = closes.dropna()
+    if not flows or closes.empty:
+        return None
+    idx = closes.index.tz_localize(None) if closes.index.tz else closes.index
+    if pd.Timestamp(flows[0][0]) < idx[0] - pd.Timedelta(days=7):
+        return None  # history doesn't reach back to the first deposit
+    shares = 0.0
+    for d, amt in flows:
+        pos = min(idx.searchsorted(pd.Timestamp(d)), len(closes) - 1)
+        shares += amt / closes.iloc[pos]
+    return float(shares * closes.iloc[-1])

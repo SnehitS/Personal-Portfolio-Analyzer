@@ -228,3 +228,21 @@ def test_csv_records_deposits(tmp_path):
     txns = _csv_snapshot(tmp_path).transactions
     [dep] = [t for t in txns if t.kind == "deposit"]
     assert dep.date == date(2025, 1, 2) and dep.amount == 5000 and dep.ticker == ""
+
+
+def test_money_weighted_return():
+    flows = [(date(2024, 1, 1), 1000.0)]
+    assert metrics.money_weighted_return(flows, 1100, date(2024, 12, 31)) == pytest.approx(0.1, abs=1e-3)
+    # Money added late barely moves the rate: 1000 for a year at 10%, plus 1000 at the end
+    flows.append((date(2024, 12, 31), 1000.0))
+    assert metrics.money_weighted_return(flows, 2100, date(2024, 12, 31)) == pytest.approx(0.1, abs=1e-3)
+    assert metrics.money_weighted_return([], 100, date(2024, 1, 1)) is None
+
+
+def test_benchmark_equivalent():
+    closes = _series([100, 100, 200, 200, 400], start="2025-01-06")  # Mon-Fri
+    flows = [(date(2025, 1, 4), 1000.0),  # Saturday -> buys Monday at 100
+             (date(2025, 1, 8), 2000.0),  # Wednesday at 200
+             (date(2025, 1, 9), -400.0)]  # Thursday, sells 2 shares
+    assert metrics.benchmark_equivalent(flows, closes) == pytest.approx((10 + 10 - 2) * 400)
+    assert metrics.benchmark_equivalent([(date(2024, 1, 1), 1.0)], closes) is None
