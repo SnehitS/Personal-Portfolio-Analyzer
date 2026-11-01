@@ -53,6 +53,10 @@ Each snapshot captures, per holding:
 
 Portfolio level: sector mix, portfolio beta and volatility, highly correlated pairs, realized short/long-term gains and dividend income for the year, plus risk flags.
 
+Performance: net deposits, gain and money-weighted (XIRR) return since your first deposit, next to what the same deposits would be worth in each benchmark (SPY, QQQ by default).
+
+Tax lots are rebuilt FIFO from order history, with stock splits applied from yfinance and trade dates in New York time. If a holding's lots don't add up to its share count (ACATS transfers, stock rewards, spinoffs), it's flagged and its lot dates and gains shouldn't be trusted. A snapshot only uses transactions from its own source, so mixing `snapshot` and `snapshot --csv` doesn't double-count.
+
 - Robinhood access uses the unofficial `robin_stocks` library and is **read-only**: only read functions are imported.
 - The first login will likely ask you to approve the device in the Robinhood app; the session is cached after that.
 - Snapshots go to `data/processed/portfolio.db` (SQLite). `data/`, `reports/`, `.env`, `*.csv` and `*.db` are gitignored.
