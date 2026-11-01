@@ -142,6 +142,28 @@ def render_risk_and_tax(snap: PortfolioSnapshot, closes: pd.DataFrame, cfg: dict
                   f"dividends {_money(metrics.dividend_income(snap.transactions, year))}")
 
 
+def render_performance(snap: PortfolioSnapshot, cfg: dict) -> None:
+    flows = metrics.cash_flows(snap.transactions)
+    if not flows:
+        return
+    today = snap.taken_at.date()
+    net_in = sum(amt for _, amt in flows)
+    mwr = metrics.money_weighted_return(flows, snap.total_equity, today)
+    console.print(f"Since first deposit {flows[0][0]:%Y-%m-%d}: net deposits {_money(net_in)}, "
+                  f"now {_money(snap.total_equity)} ({_money(snap.total_equity - net_in)} gain), "
+                  f"{_pct(mwr)}/yr money-weighted")
+
+    closes = price_history(cfg["benchmarks"], start=flows[0][0])
+    same_money = []
+    for sym in cfg["benchmarks"]:
+        value = metrics.benchmark_equivalent(flows, closes[sym]) if sym in closes else None
+        if value is not None:
+            rate = metrics.money_weighted_return(flows, value, today)
+            same_money.append(f"{sym} {_money(value)} ({_pct(rate)}/yr)")
+    if same_money:
+        console.print("Same deposits into: " + ", ".join(same_money))
+
+
 def cmd_snapshot(args, cfg: dict) -> None:
     if args.csv:
         from src.data_pipeline.sources.csv_import import CsvSource
@@ -158,6 +180,7 @@ def cmd_snapshot(args, cfg: dict) -> None:
         apply_price_stats(snap.holdings, closes, cfg["benchmarks"][0])
 
     render(snap, cfg, closes)
+    render_performance(snap, cfg)
     if not args.no_save:
         snapshot_id = storage.save_snapshot(snap, Path(cfg["database"]))
         console.print(f"\nSaved snapshot #{snapshot_id} to {cfg['database']}")

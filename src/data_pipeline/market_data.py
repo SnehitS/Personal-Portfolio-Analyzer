@@ -104,12 +104,14 @@ def enrich_holdings(holdings: list[Holding]) -> None:
         h.last_eps_surprise_pct = None if is_etf else _last_eps_surprise(t)
 
 
-def price_history(symbols: list[str], period: str = "1y") -> pd.DataFrame:
-    """Daily adjusted closes, one column per symbol."""
+def price_history(symbols: list[str], period: str = "1y",
+                  start: date | None = None) -> pd.DataFrame:
+    """Daily adjusted closes, one column per symbol, over `period` or since `start`."""
     if not symbols:
         return pd.DataFrame()
-    data = yf.download(sorted(set(symbols)), period=period, auto_adjust=True,
-                       progress=False, group_by="column")
+    span = {"start": start.isoformat()} if start else {"period": period}
+    data = yf.download(sorted(set(symbols)), auto_adjust=True, progress=False,
+                       group_by="column", **span)
     closes = data["Close"]
     if isinstance(closes, pd.Series):
         closes = closes.to_frame(symbols[0])
