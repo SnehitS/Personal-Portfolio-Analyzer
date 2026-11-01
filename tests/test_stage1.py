@@ -142,3 +142,14 @@ def test_load_latest_snapshot_roundtrip(tmp_path):
     assert aapl.next_earnings == date(2026, 11, 2) and aapl.rsi_14 == 55.5
     assert len(loaded.transactions) == len(snap.transactions)
     assert loaded.transactions[0].date == snap.transactions[0].date
+
+
+# --- Data correctness ------------------------------------------------------------------
+
+from src.data_pipeline.sources.robinhood import market_date
+
+
+def test_market_date_uses_new_york_time():
+    # A 7:30pm ET after-hours fill is already the next day in UTC
+    assert market_date("2025-03-04T00:30:00Z") == date(2025, 3, 3)
+    assert market_date("2025-07-01T14:00:00.123456Z") == date(2025, 7, 1)

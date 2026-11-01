@@ -4,5 +4,6 @@ yfinance>=0.2.50
 pandas>=2.2
 python-dotenv>=1.0
 PyYAML>=6.0
+tzdata>=2024.1  # time zone data for zoneinfo on Windows
 rich>=13.7
 pytest>=8.0
