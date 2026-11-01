@@ -131,6 +131,7 @@ class Transaction:
     quantity: float
     price: float
     amount: float  # signed cash impact (negative for buys)
+    ref: str = ""  # stable ID within its source (order ID, or a row key for CSVs)
 
 
 @dataclass

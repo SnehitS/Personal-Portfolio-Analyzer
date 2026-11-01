@@ -3,7 +3,7 @@ from datetime import date, datetime
 import pytest
 
 from src.data_pipeline import storage
-from src.data_pipeline.models import AccountSummary, Holding, PortfolioSnapshot
+from src.data_pipeline.models import AccountSummary, Holding, PortfolioSnapshot, Transaction
 from src.data_pipeline.sources.csv_import import CsvSource, parse_money
 from src.portfolio_analysis import metrics
 
@@ -153,3 +153,40 @@ def test_market_date_uses_new_york_time():
     # A 7:30pm ET after-hours fill is already the next day in UTC
     assert market_date("2025-03-04T00:30:00Z") == date(2025, 3, 3)
     assert market_date("2025-07-01T14:00:00.123456Z") == date(2025, 7, 1)
+
+
+def test_identical_csv_fills_are_kept(tmp_path):
+    row = '"02/03/2025","02/03/2025","02/04/2025","AAPL","Apple","Buy","1","$100.00","($100.00)"\n'
+    path = tmp_path / "activity.csv"
+    path.write_text(CSV.split("\n")[0] + "\n" + row + row, encoding="utf-8")
+    snap = CsvSource(path).fetch_snapshot()
+    assert snap.holdings[0].quantity == 2
+    db = tmp_path / "p.db"
+    storage.save_snapshot(snap, db)
+    storage.save_snapshot(snap, db)  # re-importing the same file adds nothing
+    assert len(storage.load_latest_snapshot(db).transactions) == 2
+
+
+def test_sources_dont_share_transactions(tmp_path):
+    db = tmp_path / "p.db"
+    csv_snap = _csv_snapshot(tmp_path)
+    storage.save_snapshot(csv_snap, db)
+    # The same history from the API: different refs, amounts without fees
+    live_txns = [Transaction(t.ticker, t.kind, t.date, t.quantity, t.price, t.amount * 0.99,
+                             ref=f"order-{i}") for i, t in enumerate(csv_snap.transactions)]
+    storage.save_snapshot(PortfolioSnapshot("robinhood", datetime.now(), AccountSummary(0),
+                                            csv_snap.holdings, live_txns), db)
+    loaded = storage.load_latest_snapshot(db)
+    assert loaded.source == "robinhood" and len(loaded.transactions) == len(live_txns)
+    assert metrics.fifo_lots(loaded.transactions)["AAPL"][-1].quantity == 10
+
+
+def test_legacy_transactions_table_is_replaced(tmp_path):
+    import sqlite3
+    db = tmp_path / "p.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE transactions (ticker TEXT, kind TEXT, date TEXT,"
+                     " quantity REAL, price REAL, amount REAL)")
+        conn.execute("INSERT INTO transactions VALUES ('X', 'buy', '2025-01-01', 1, 1, -1)")
+    storage.save_snapshot(_csv_snapshot(tmp_path), db)
+    assert all(t.ref for t in storage.load_latest_snapshot(db).transactions)

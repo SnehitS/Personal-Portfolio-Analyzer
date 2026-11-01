@@ -136,6 +136,7 @@ class RobinhoodSource(PortfolioSource):
                 quantity=qty,
                 price=price,
                 amount=-qty * price if side == "buy" else qty * price,
+                ref=order["id"],
             ))
 
         for div in get_dividends() or []:
@@ -148,6 +149,7 @@ class RobinhoodSource(PortfolioSource):
                 quantity=_f(div.get("position")) or 0.0,
                 price=_f(div.get("rate")) or 0.0,
                 amount=_f(div.get("amount")) or 0.0,
+                ref=div["id"],
             ))
 
         txns.sort(key=lambda t: t.date)
