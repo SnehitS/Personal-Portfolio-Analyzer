@@ -214,3 +214,11 @@ def test_reverse_split():
     assert s.quantity == pytest.approx(-90)
     [lot] = metrics.fifo_lots(txns + [s])["X"]
     assert lot.quantity == pytest.approx(10) and lot.price == pytest.approx(10)
+
+
+def test_lot_mismatch_flag(tmp_path):
+    snap = _csv_snapshot(tmp_path)
+    assert not any("tax lots cover" in f for f in metrics.risk_flags(snap, CFG, date(2026, 1, 1)))
+    snap.holdings.append(Holding("MSFT", 3, 300, 400))  # transferred in, no buy on record
+    flags = metrics.risk_flags(snap, CFG, date(2026, 1, 1))
+    assert any("MSFT: tax lots cover 0 shares but you hold 3" in f for f in flags)

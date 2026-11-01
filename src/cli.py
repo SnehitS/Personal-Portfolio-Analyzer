@@ -256,6 +256,9 @@ def cmd_position(args, cfg: dict) -> None:
                           "long" if lot.is_long_term(today) else "short",
                           f"{lot.long_term_date:%Y-%m-%d}")
         console.print(table)
+    for _, held, in_lots in metrics.lot_mismatches([h], {ticker: lots}):
+        console.print(f"[yellow]Lots cover {in_lots:g} of {held:g} shares; some history is "
+                      f"missing, so treat these dates and gains as incomplete.[/yellow]")
     console.print(f"[dim]From snapshot taken {snap.taken_at:%Y-%m-%d %H:%M}[/dim]")
 
 

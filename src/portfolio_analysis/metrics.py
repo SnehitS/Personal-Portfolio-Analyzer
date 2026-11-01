@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from src.data_pipeline.models import PortfolioSnapshot, Transaction
+from src.data_pipeline.models import Holding, PortfolioSnapshot, Transaction
 from src.portfolio_analysis import technicals as ta
 
 LONG_TERM_DAYS = 365
@@ -107,6 +107,16 @@ def dividend_income(txns: list[Transaction], year: int | None = None) -> float:
                if t.kind == "dividend" and (year is None or t.date.year == year))
 
 
+def lot_mismatches(holdings: list[Holding], lots: dict[str, list[Lot]],
+                   tolerance: float = 1e-4) -> list[tuple[str, float, float]]:
+    """(ticker, shares held, shares in open lots) wherever the two disagree."""
+    held = {h.ticker: h.quantity for h in holdings}
+    in_lots = {t: sum(l.quantity for l in ls) for t, ls in lots.items()}
+    return [(t, held.get(t, 0.0), in_lots.get(t, 0.0))
+            for t in sorted(held.keys() | in_lots.keys())
+            if abs(held.get(t, 0.0) - in_lots.get(t, 0.0)) > tolerance]
+
+
 @dataclass
 class PortfolioRisk:
     beta: float | None
@@ -169,8 +179,15 @@ def risk_flags(snap: PortfolioSnapshot, cfg: dict, today: date | None = None) ->
             flags.append(f"{sector} is {sw:.0%} of holdings "
                          f"(threshold {cfg['max_sector_weight']:.0%})")
 
+    all_lots = fifo_lots(snap.transactions)
+    if snap.transactions:
+        for ticker, held, in_lots in lot_mismatches(snap.holdings, all_lots):
+            flags.append(f"{ticker}: tax lots cover {in_lots:g} shares but you hold {held:g} "
+                         f"(transfers, rewards or corporate actions missing from history), "
+                         f"so its lot dates and gains are unreliable")
+
     window = timedelta(days=cfg["long_term_window_days"])
-    for ticker, lots in fifo_lots(snap.transactions).items():
+    for ticker, lots in all_lots.items():
         for lot in lots:
             if not lot.is_long_term(today) and lot.long_term_date - today <= window:
                 flags.append(f"{lot.quantity:g} {ticker} shares turn long-term on "
