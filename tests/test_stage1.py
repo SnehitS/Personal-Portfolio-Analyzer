@@ -190,3 +190,27 @@ def test_legacy_transactions_table_is_replaced(tmp_path):
         conn.execute("INSERT INTO transactions VALUES ('X', 'buy', '2025-01-01', 1, 1, -1)")
     storage.save_snapshot(_csv_snapshot(tmp_path), db)
     assert all(t.ref for t in storage.load_latest_snapshot(db).transactions)
+
+
+def test_split_transactions_from_split_history():
+    from src.data_pipeline.market_data import split_transactions
+    txns = [
+        Transaction("NVDA", "buy", date(2024, 1, 2), 2, 500, -1000, "a"),
+        Transaction("NVDA", "sell", date(2024, 3, 1), 1, 800, 800, "b"),
+        Transaction("NVDA", "buy", date(2024, 6, 10), 5, 120, -600, "c"),  # split day
+    ]
+    splits = split_transactions(txns, {"NVDA": [(date(2021, 7, 20), 4.0),
+                                                (date(2024, 6, 10), 10.0)]})
+    assert [(s.date, s.quantity) for s in splits] == [(date(2024, 6, 10), 9)]
+    lots = metrics.fifo_lots(txns + splits)["NVDA"]
+    assert [(l.opened, l.quantity, l.price) for l in lots] == [
+        (date(2024, 1, 2), 10, 50), (date(2024, 6, 10), 5, 120)]
+
+
+def test_reverse_split():
+    from src.data_pipeline.market_data import split_transactions
+    txns = [Transaction("X", "buy", date(2024, 1, 2), 100, 1, -100, "a")]
+    [s] = split_transactions(txns, {"X": [(date(2024, 5, 1), 0.1)]})
+    assert s.quantity == pytest.approx(-90)
+    [lot] = metrics.fifo_lots(txns + [s])["X"]
+    assert lot.quantity == pytest.approx(10) and lot.price == pytest.approx(10)

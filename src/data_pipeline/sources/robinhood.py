@@ -10,6 +10,7 @@ import os
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+from src.data_pipeline.market_data import split_transactions, stock_splits
 from src.data_pipeline.models import (
     AccountSummary, Holding, OptionPosition, PortfolioSnapshot, Transaction,
 )
@@ -152,5 +153,8 @@ class RobinhoodSource(PortfolioSource):
                 ref=div["id"],
             ))
 
+        # Order history keeps pre-split share counts and prices
+        bought = {t.ticker for t in txns if t.kind == "buy"}
+        txns += split_transactions(txns, stock_splits(bought))
         txns.sort(key=lambda t: t.date)
         return txns

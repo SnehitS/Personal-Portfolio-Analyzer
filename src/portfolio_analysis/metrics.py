@@ -66,7 +66,8 @@ def _run_fifo(txns: list[Transaction]) -> tuple[dict[str, list[Lot]], list[Reali
     """Replay transactions FIFO (Robinhood's default cost-basis method)."""
     lots: dict[str, deque[Lot]] = defaultdict(deque)
     realized: list[RealizedGain] = []
-    for t in sorted(txns, key=lambda t: t.date):
+    # A split takes effect at the open, before any trades that day
+    for t in sorted(txns, key=lambda t: (t.date, t.kind != "split")):
         book = lots[t.ticker]
         if t.kind == "buy":
             book.append(Lot(t.ticker, t.date, t.quantity, t.price))
