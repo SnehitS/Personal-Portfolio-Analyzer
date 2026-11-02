@@ -123,7 +123,8 @@ class OptionPosition:
 
 @dataclass
 class Transaction:
-    """A single account event. `kind` is one of: buy, sell, dividend, split."""
+    """A single account event. `kind` is one of: buy, sell, dividend, split, deposit,
+    withdrawal. Deposits and withdrawals have an empty ticker."""
 
     ticker: str
     kind: str
@@ -131,6 +132,7 @@ class Transaction:
     quantity: float
     price: float
     amount: float  # signed cash impact (negative for buys)
+    ref: str = ""  # stable ID within its source (order ID, or a row key for CSVs)
 
 
 @dataclass

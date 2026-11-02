@@ -39,8 +39,9 @@ CREATE TABLE IF NOT EXISTS option_positions (
     market_value REAL
 );
 CREATE TABLE IF NOT EXISTS transactions (
+    source TEXT NOT NULL, ref TEXT NOT NULL,
     ticker TEXT, kind TEXT, date TEXT, quantity REAL, price REAL, amount REAL,
-    UNIQUE (ticker, kind, date, quantity, price, amount)
+    PRIMARY KEY (source, ref)
 );
 """
 
@@ -49,10 +50,19 @@ def connect(db_path: Path = DEFAULT_DB) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    _drop_legacy_transactions(conn)
     conn.executescript(SCHEMA)
     _add_missing_columns(conn, "holdings", _HOLDING_COLS)
     _add_missing_columns(conn, "option_positions", _OPTION_COLS)
     return conn
+
+
+def _drop_legacy_transactions(conn: sqlite3.Connection) -> None:
+    """The first transactions table had no source or ref, so rows from Robinhood and a CSV
+    could both be kept for one trade. Every snapshot refetches full history, so drop it."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(transactions)")}
+    if cols and "ref" not in cols:
+        conn.execute("DROP TABLE transactions")
 
 
 def _add_missing_columns(conn: sqlite3.Connection, table: str, columns: list[str]) -> None:
@@ -89,9 +99,10 @@ def save_snapshot(snap: PortfolioSnapshot, db_path: Path = DEFAULT_DB) -> int:
             [(snapshot_id, *_sql_values(asdict(o)), o.market_value) for o in snap.options],
         )
         conn.executemany(
-            "INSERT OR IGNORE INTO transactions VALUES (?, ?, ?, ?, ?, ?)",
-            [(t.ticker, t.kind, t.date.isoformat(), t.quantity, t.price, t.amount)
-             for t in snap.transactions],
+            "INSERT OR REPLACE INTO transactions (source, ref, ticker, kind, date, quantity,"
+            " price, amount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(snap.source, t.ref, t.ticker, t.kind, t.date.isoformat(), t.quantity, t.price,
+              t.amount) for t in snap.transactions],
         )
     return snapshot_id
 
@@ -112,9 +123,11 @@ def load_latest_snapshot(db_path: Path = DEFAULT_DB) -> PortfolioSnapshot | None
             "SELECT * FROM holdings WHERE snapshot_id = ?", (snap["id"],))]
         options = [_from_row(OptionPosition, r) for r in conn.execute(
             "SELECT * FROM option_positions WHERE snapshot_id = ?", (snap["id"],))]
+        # Only the snapshot's own source: the same trade can come from Robinhood and a CSV
         txns = [Transaction(r["ticker"], r["kind"], date.fromisoformat(r["date"]),
-                            r["quantity"], r["price"], r["amount"])
-                for r in conn.execute("SELECT * FROM transactions ORDER BY date")]
+                            r["quantity"], r["price"], r["amount"], r["ref"])
+                for r in conn.execute("SELECT * FROM transactions WHERE source = ?"
+                                      " ORDER BY date, rowid", (snap["source"],))]
     return PortfolioSnapshot(
         source=snap["source"],
         taken_at=datetime.fromisoformat(snap["taken_at"]),

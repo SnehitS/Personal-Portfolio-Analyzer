@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from src.data_pipeline.models import PortfolioSnapshot, Transaction
+from src.data_pipeline.models import Holding, PortfolioSnapshot, Transaction
 from src.portfolio_analysis import technicals as ta
 
 LONG_TERM_DAYS = 365
@@ -66,7 +66,8 @@ def _run_fifo(txns: list[Transaction]) -> tuple[dict[str, list[Lot]], list[Reali
     """Replay transactions FIFO (Robinhood's default cost-basis method)."""
     lots: dict[str, deque[Lot]] = defaultdict(deque)
     realized: list[RealizedGain] = []
-    for t in sorted(txns, key=lambda t: t.date):
+    # A split takes effect at the open, before any trades that day
+    for t in sorted(txns, key=lambda t: (t.date, t.kind != "split")):
         book = lots[t.ticker]
         if t.kind == "buy":
             book.append(Lot(t.ticker, t.date, t.quantity, t.price))
@@ -104,6 +105,16 @@ def realized_gains(txns: list[Transaction], year: int | None = None) -> list[Rea
 def dividend_income(txns: list[Transaction], year: int | None = None) -> float:
     return sum(t.amount for t in txns
                if t.kind == "dividend" and (year is None or t.date.year == year))
+
+
+def lot_mismatches(holdings: list[Holding], lots: dict[str, list[Lot]],
+                   tolerance: float = 1e-4) -> list[tuple[str, float, float]]:
+    """(ticker, shares held, shares in open lots) wherever the two disagree."""
+    held = {h.ticker: h.quantity for h in holdings}
+    in_lots = {t: sum(l.quantity for l in ls) for t, ls in lots.items()}
+    return [(t, held.get(t, 0.0), in_lots.get(t, 0.0))
+            for t in sorted(held.keys() | in_lots.keys())
+            if abs(held.get(t, 0.0) - in_lots.get(t, 0.0)) > tolerance]
 
 
 @dataclass
@@ -168,8 +179,15 @@ def risk_flags(snap: PortfolioSnapshot, cfg: dict, today: date | None = None) ->
             flags.append(f"{sector} is {sw:.0%} of holdings "
                          f"(threshold {cfg['max_sector_weight']:.0%})")
 
+    all_lots = fifo_lots(snap.transactions)
+    if snap.transactions:
+        for ticker, held, in_lots in lot_mismatches(snap.holdings, all_lots):
+            flags.append(f"{ticker}: tax lots cover {in_lots:g} shares but you hold {held:g} "
+                         f"(transfers, rewards or corporate actions missing from history), "
+                         f"so its lot dates and gains are unreliable")
+
     window = timedelta(days=cfg["long_term_window_days"])
-    for ticker, lots in fifo_lots(snap.transactions).items():
+    for ticker, lots in all_lots.items():
         for lot in lots:
             if not lot.is_long_term(today) and lot.long_term_date - today <= window:
                 flags.append(f"{lot.quantity:g} {ticker} shares turn long-term on "
@@ -184,3 +202,45 @@ def risk_flags(snap: PortfolioSnapshot, cfg: dict, today: date | None = None) ->
         flags.append(f"{snap.account.cash / snap.total_equity:.0%} of the account is "
                      f"uninvested cash")
     return flags
+
+
+def cash_flows(txns: list[Transaction]) -> list[tuple[date, float]]:
+    """Money moved into (+) or out of (-) the account, oldest first."""
+    return sorted((t.date, t.amount) for t in txns if t.kind in ("deposit", "withdrawal"))
+
+
+def money_weighted_return(flows: list[tuple[date, float]], end_value: float,
+                          end_date: date) -> float | None:
+    """Annualized rate r at which the flows, compounded to end_date, grow to end_value (XIRR)."""
+    if not flows or end_date <= flows[0][0]:
+        return None
+
+    def excess(rate: float) -> float:
+        return sum(amt * (1 + rate) ** ((end_date - d).days / 365) for d, amt in flows) - end_value
+
+    lo, hi = -0.99, 10.0
+    if excess(lo) * excess(hi) > 0:
+        return None
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if excess(lo) * excess(mid) <= 0:
+            hi = mid
+        else:
+            lo = mid
+    return (lo + hi) / 2
+
+
+def benchmark_equivalent(flows: list[tuple[date, float]], closes: pd.Series) -> float | None:
+    """What the account would be worth had every deposit bought the benchmark (and every
+    withdrawal sold it) at the next available close."""
+    closes = closes.dropna()
+    if not flows or closes.empty:
+        return None
+    idx = closes.index.tz_localize(None) if closes.index.tz else closes.index
+    if pd.Timestamp(flows[0][0]) < idx[0] - pd.Timedelta(days=7):
+        return None  # history doesn't reach back to the first deposit
+    shares = 0.0
+    for d, amt in flows:
+        pos = min(idx.searchsorted(pd.Timestamp(d)), len(closes) - 1)
+        shares += amt / closes.iloc[pos]
+    return float(shares * closes.iloc[-1])

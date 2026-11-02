@@ -3,7 +3,7 @@ from datetime import date, datetime
 import pytest
 
 from src.data_pipeline import storage
-from src.data_pipeline.models import AccountSummary, Holding, PortfolioSnapshot
+from src.data_pipeline.models import AccountSummary, Holding, PortfolioSnapshot, Transaction
 from src.data_pipeline.sources.csv_import import CsvSource, parse_money
 from src.portfolio_analysis import metrics
 
@@ -142,3 +142,107 @@ def test_load_latest_snapshot_roundtrip(tmp_path):
     assert aapl.next_earnings == date(2026, 11, 2) and aapl.rsi_14 == 55.5
     assert len(loaded.transactions) == len(snap.transactions)
     assert loaded.transactions[0].date == snap.transactions[0].date
+
+
+# --- Data correctness ------------------------------------------------------------------
+
+from src.data_pipeline.sources.robinhood import market_date
+
+
+def test_market_date_uses_new_york_time():
+    # A 7:30pm ET after-hours fill is already the next day in UTC
+    assert market_date("2025-03-04T00:30:00Z") == date(2025, 3, 3)
+    assert market_date("2025-07-01T14:00:00.123456Z") == date(2025, 7, 1)
+
+
+def test_identical_csv_fills_are_kept(tmp_path):
+    row = '"02/03/2025","02/03/2025","02/04/2025","AAPL","Apple","Buy","1","$100.00","($100.00)"\n'
+    path = tmp_path / "activity.csv"
+    path.write_text(CSV.split("\n")[0] + "\n" + row + row, encoding="utf-8")
+    snap = CsvSource(path).fetch_snapshot()
+    assert snap.holdings[0].quantity == 2
+    db = tmp_path / "p.db"
+    storage.save_snapshot(snap, db)
+    storage.save_snapshot(snap, db)  # re-importing the same file adds nothing
+    assert len(storage.load_latest_snapshot(db).transactions) == 2
+
+
+def test_sources_dont_share_transactions(tmp_path):
+    db = tmp_path / "p.db"
+    csv_snap = _csv_snapshot(tmp_path)
+    storage.save_snapshot(csv_snap, db)
+    # The same history from the API: different refs, amounts without fees
+    live_txns = [Transaction(t.ticker, t.kind, t.date, t.quantity, t.price, t.amount * 0.99,
+                             ref=f"order-{i}") for i, t in enumerate(csv_snap.transactions)]
+    storage.save_snapshot(PortfolioSnapshot("robinhood", datetime.now(), AccountSummary(0),
+                                            csv_snap.holdings, live_txns), db)
+    loaded = storage.load_latest_snapshot(db)
+    assert loaded.source == "robinhood" and len(loaded.transactions) == len(live_txns)
+    assert metrics.fifo_lots(loaded.transactions)["AAPL"][-1].quantity == 10
+
+
+def test_legacy_transactions_table_is_replaced(tmp_path):
+    import sqlite3
+    db = tmp_path / "p.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE transactions (ticker TEXT, kind TEXT, date TEXT,"
+                     " quantity REAL, price REAL, amount REAL)")
+        conn.execute("INSERT INTO transactions VALUES ('X', 'buy', '2025-01-01', 1, 1, -1)")
+    storage.save_snapshot(_csv_snapshot(tmp_path), db)
+    assert all(t.ref for t in storage.load_latest_snapshot(db).transactions)
+
+
+def test_split_transactions_from_split_history():
+    from src.data_pipeline.market_data import split_transactions
+    txns = [
+        Transaction("NVDA", "buy", date(2024, 1, 2), 2, 500, -1000, "a"),
+        Transaction("NVDA", "sell", date(2024, 3, 1), 1, 800, 800, "b"),
+        Transaction("NVDA", "buy", date(2024, 6, 10), 5, 120, -600, "c"),  # split day
+    ]
+    splits = split_transactions(txns, {"NVDA": [(date(2021, 7, 20), 4.0),
+                                                (date(2024, 6, 10), 10.0)]})
+    assert [(s.date, s.quantity) for s in splits] == [(date(2024, 6, 10), 9)]
+    lots = metrics.fifo_lots(txns + splits)["NVDA"]
+    assert [(l.opened, l.quantity, l.price) for l in lots] == [
+        (date(2024, 1, 2), 10, 50), (date(2024, 6, 10), 5, 120)]
+
+
+def test_reverse_split():
+    from src.data_pipeline.market_data import split_transactions
+    txns = [Transaction("X", "buy", date(2024, 1, 2), 100, 1, -100, "a")]
+    [s] = split_transactions(txns, {"X": [(date(2024, 5, 1), 0.1)]})
+    assert s.quantity == pytest.approx(-90)
+    [lot] = metrics.fifo_lots(txns + [s])["X"]
+    assert lot.quantity == pytest.approx(10) and lot.price == pytest.approx(10)
+
+
+def test_lot_mismatch_flag(tmp_path):
+    snap = _csv_snapshot(tmp_path)
+    assert not any("tax lots cover" in f for f in metrics.risk_flags(snap, CFG, date(2026, 1, 1)))
+    snap.holdings.append(Holding("MSFT", 3, 300, 400))  # transferred in, no buy on record
+    flags = metrics.risk_flags(snap, CFG, date(2026, 1, 1))
+    assert any("MSFT: tax lots cover 0 shares but you hold 3" in f for f in flags)
+
+
+def test_csv_records_deposits(tmp_path):
+    txns = _csv_snapshot(tmp_path).transactions
+    [dep] = [t for t in txns if t.kind == "deposit"]
+    assert dep.date == date(2025, 1, 2) and dep.amount == 5000 and dep.ticker == ""
+
+
+def test_money_weighted_return():
+    flows = [(date(2024, 1, 1), 1000.0)]
+    assert metrics.money_weighted_return(flows, 1100, date(2024, 12, 31)) == pytest.approx(0.1, abs=1e-3)
+    # Money added late barely moves the rate: 1000 for a year at 10%, plus 1000 at the end
+    flows.append((date(2024, 12, 31), 1000.0))
+    assert metrics.money_weighted_return(flows, 2100, date(2024, 12, 31)) == pytest.approx(0.1, abs=1e-3)
+    assert metrics.money_weighted_return([], 100, date(2024, 1, 1)) is None
+
+
+def test_benchmark_equivalent():
+    closes = _series([100, 100, 200, 200, 400], start="2025-01-06")  # Mon-Fri
+    flows = [(date(2025, 1, 4), 1000.0),  # Saturday -> buys Monday at 100
+             (date(2025, 1, 8), 2000.0),  # Wednesday at 200
+             (date(2025, 1, 9), -400.0)]  # Thursday, sells 2 shares
+    assert metrics.benchmark_equivalent(flows, closes) == pytest.approx((10 + 10 - 2) * 400)
+    assert metrics.benchmark_equivalent([(date(2024, 1, 1), 1.0)], closes) is None

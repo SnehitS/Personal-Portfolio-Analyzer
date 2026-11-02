@@ -10,7 +10,7 @@ from datetime import date, datetime
 import pandas as pd
 import yfinance as yf
 
-from src.data_pipeline.models import Holding
+from src.data_pipeline.models import Holding, Transaction
 from src.portfolio_analysis import technicals as ta
 
 log = logging.getLogger(__name__)
@@ -104,12 +104,14 @@ def enrich_holdings(holdings: list[Holding]) -> None:
         h.last_eps_surprise_pct = None if is_etf else _last_eps_surprise(t)
 
 
-def price_history(symbols: list[str], period: str = "1y") -> pd.DataFrame:
-    """Daily adjusted closes, one column per symbol."""
+def price_history(symbols: list[str], period: str = "1y",
+                  start: date | None = None) -> pd.DataFrame:
+    """Daily adjusted closes, one column per symbol, over `period` or since `start`."""
     if not symbols:
         return pd.DataFrame()
-    data = yf.download(sorted(set(symbols)), period=period, auto_adjust=True,
-                       progress=False, group_by="column")
+    span = {"start": start.isoformat()} if start else {"period": period}
+    data = yf.download(sorted(set(symbols)), auto_adjust=True, progress=False,
+                       group_by="column", **span)
     closes = data["Close"]
     if isinstance(closes, pd.Series):
         closes = closes.to_frame(symbols[0])
@@ -143,4 +145,42 @@ def benchmark_day_change(symbols: list[str]) -> dict[str, float | None]:
             out[sym] = info["regularMarketPrice"] / info["regularMarketPreviousClose"] - 1
         except Exception:
             out[sym] = None
+    return out
+
+
+def stock_splits(tickers: set[str]) -> dict[str, list[tuple[date, float]]]:
+    """Split history per ticker as (effective date, ratio); 10.0 is 10-for-1, 0.1 a reverse."""
+    out: dict[str, list[tuple[date, float]]] = {}
+    for sym in sorted(tickers):
+        try:
+            splits = yf.Ticker(sym).splits
+        except Exception as exc:
+            log.warning("split lookup failed for %s: %s", sym, exc)
+            continue
+        if len(splits):
+            out[sym] = [(ts.date(), float(ratio)) for ts, ratio in splits.items()]
+    return out
+
+
+def split_transactions(txns: list[Transaction],
+                       splits: dict[str, list[tuple[date, float]]]) -> list[Transaction]:
+    """Split events as transactions, for sources whose order history isn't split-adjusted.
+
+    Like the CSV's split rows, `quantity` is the shares added (negative for reverse splits),
+    based on the shares held going into the split date.
+    """
+    out: list[Transaction] = []
+    for ticker, events in splits.items():
+        trades = sorted((t for t in txns if t.ticker == ticker and t.kind in ("buy", "sell")),
+                        key=lambda t: t.date)
+        held, i = 0.0, 0
+        for day, ratio in sorted(events):
+            while i < len(trades) and trades[i].date < day:  # same-day fills are post-split
+                held += trades[i].quantity if trades[i].kind == "buy" else -trades[i].quantity
+                i += 1
+            if held > 1e-9:
+                added = held * (ratio - 1)
+                out.append(Transaction(ticker, "split", day, added, 0.0, 0.0,
+                                       ref=f"split:{ticker}:{day.isoformat()}"))
+                held += added
     return out

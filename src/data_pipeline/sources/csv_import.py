@@ -8,7 +8,7 @@ so positions are rebuilt from them and prices come from market_data enrichment.
 from __future__ import annotations
 
 import csv
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +38,7 @@ def read_activity_csv(path: Path) -> tuple[list[Transaction], float]:
     """Return (stock transactions, net cash from every row)."""
     txns: list[Transaction] = []
     net_cash = 0.0
+    seen: Counter[str] = Counter()
     with open(path, newline="", encoding="utf-8-sig") as fh:
         for row in csv.DictReader(fh):
             code = (row.get("Trans Code") or "").strip()
@@ -46,8 +47,15 @@ def read_activity_csv(path: Path) -> tuple[list[Transaction], float]:
             amount = parse_money(row.get("Amount", ""))
             net_cash += amount
             kind = TRANS_CODES.get(code)
+            if code == "ACH":
+                kind = "deposit" if amount > 0 else "withdrawal"
             if kind is None:
                 continue
+            # The CSV has no IDs. Key on the row's contents, numbered so that two identical
+            # fills on one day stay separate; stable when the same history is re-exported.
+            key = "|".join(row.get(c, "").strip() for c in (
+                "Activity Date", "Instrument", "Trans Code", "Quantity", "Price", "Amount"))
+            seen[key] += 1
             txns.append(Transaction(
                 ticker=row["Instrument"].strip(),
                 kind=kind,
@@ -55,6 +63,7 @@ def read_activity_csv(path: Path) -> tuple[list[Transaction], float]:
                 quantity=parse_quantity(row.get("Quantity", "")),
                 price=parse_money(row.get("Price", "")),
                 amount=amount,
+                ref=f"{key}#{seen[key]}",
             ))
     txns.sort(key=lambda t: t.date)
     return txns, net_cash

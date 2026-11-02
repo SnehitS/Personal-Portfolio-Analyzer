@@ -7,12 +7,16 @@ READ-ONLY: only the read functions below are imported. Nothing in this module
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
+from src.data_pipeline.market_data import split_transactions, stock_splits
 from src.data_pipeline.models import (
     AccountSummary, Holding, OptionPosition, PortfolioSnapshot, Transaction,
 )
 from src.data_pipeline.sources.base import PortfolioSource
+
+MARKET_TZ = ZoneInfo("America/New_York")
 
 
 def _f(value) -> float | None:
@@ -20,6 +24,12 @@ def _f(value) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def market_date(timestamp: str) -> date:
+    """Robinhood timestamps are UTC; trade dates (and holding periods) follow New York time."""
+    utc = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    return utc.astimezone(MARKET_TZ).date()
 
 
 class RobinhoodSource(PortfolioSource):
@@ -104,7 +114,9 @@ class RobinhoodSource(PortfolioSource):
         return positions
 
     def _fetch_transactions(self) -> list[Transaction]:
-        from robin_stocks.robinhood import get_all_stock_orders, get_dividends, get_symbol_by_url
+        from robin_stocks.robinhood import (
+            get_all_stock_orders, get_bank_transfers, get_dividends, get_symbol_by_url,
+        )
 
         symbols: dict[str, str] = {}
 
@@ -123,10 +135,11 @@ class RobinhoodSource(PortfolioSource):
             txns.append(Transaction(
                 ticker=symbol(order["instrument"]),
                 kind=side,
-                date=datetime.fromisoformat(order["last_transaction_at"].replace("Z", "+00:00")).date(),
+                date=market_date(order["last_transaction_at"]),
                 quantity=qty,
                 price=price,
                 amount=-qty * price if side == "buy" else qty * price,
+                ref=order["id"],
             ))
 
         for div in get_dividends() or []:
@@ -135,11 +148,32 @@ class RobinhoodSource(PortfolioSource):
             txns.append(Transaction(
                 ticker=symbol(div["instrument"]),
                 kind="dividend",
-                date=datetime.fromisoformat(div["paid_at"].replace("Z", "+00:00")).date(),
+                date=market_date(div["paid_at"]),
                 quantity=_f(div.get("position")) or 0.0,
                 price=_f(div.get("rate")) or 0.0,
                 amount=_f(div.get("amount")) or 0.0,
+                ref=div["id"],
             ))
 
+        # Transfers started in the app, plus ones pulled from the bank side
+        for transfer in (get_bank_transfers() or []) + (get_bank_transfers("received") or []):
+            if transfer.get("state") != "completed":
+                continue
+            amount = transfer.get("amount")
+            amount = _f(amount.get("amount") if isinstance(amount, dict) else amount) or 0.0
+            deposit = transfer.get("direction") == "deposit"
+            txns.append(Transaction(
+                ticker="",
+                kind="deposit" if deposit else "withdrawal",
+                date=market_date(transfer["created_at"]),
+                quantity=0.0,
+                price=0.0,
+                amount=amount if deposit else -amount,
+                ref=transfer["id"],
+            ))
+
+        # Order history keeps pre-split share counts and prices
+        bought = {t.ticker for t in txns if t.kind == "buy"}
+        txns += split_transactions(txns, stock_splits(bought))
         txns.sort(key=lambda t: t.date)
         return txns
