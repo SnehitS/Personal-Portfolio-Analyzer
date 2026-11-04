@@ -5,6 +5,7 @@
     python -m src.cli history                     # list saved snapshots
     python -m src.cli position NVDA               # deep dive from the latest snapshot
     python -m src.cli news                        # fetch and show news for your holdings
+    python -m src.cli options                     # implied moves and IV for your holdings
 """
 
 from __future__ import annotations
@@ -365,6 +366,66 @@ def cmd_news(args, cfg: dict) -> None:
         console.print(table)
 
 
+def cmd_options(args, cfg: dict) -> None:
+    from statistics import mean
+
+    from src.data_pipeline import options_data
+    from src.portfolio_analysis import options as op
+
+    snap = storage.load_latest_snapshot(Path(cfg["database"]))
+    tickers = [t.upper() for t in args.tickers] or _portfolio_tickers(cfg)
+    if not tickers:
+        console.print("No tickers given and no snapshot yet. Try `options AAPL` or run `snapshot`.")
+        return
+    held = {h.ticker: h for h in snap.holdings} if snap else {}
+    db = Path(cfg["database"])
+    today = date.today()
+    with console.status("Fetching price history..."):
+        closes = price_history(tickers, period="3y")
+
+    table = Table(title="Options-implied expectations")
+    for col in ("Ticker", "Price", "IV 30d", "Realized 30d", "IV rank", "~1W move",
+                "~1M move", "Earnings", "Implied", "Past avg"):
+        table.add_column(col, justify="left" if col == "Ticker" else "right")
+    for ticker in tickers:
+        with console.status(f"Option chains for {ticker}..."):
+            h = held.get(ticker)
+            earn = (h.next_earnings if h else None) or options_data.next_earnings(ticker)
+            views = options_data.option_views(ticker, must_cover=[earn + timedelta(days=1)]
+                                              if earn else None)
+            if not views:
+                table.add_row(ticker, *["-"] * 9)
+                continue
+            iv30 = op.interpolated_iv(views, 30)
+            spot = views[0].spot
+            if iv30:
+                storage.save_iv(ticker, today, iv30, spot, db)
+            history = storage.load_iv_history(ticker, today - timedelta(days=365), db)
+            series = closes[ticker] if ticker in closes else None
+            rv = op.realized_vol(series) if series is not None else None
+            week = op.first_expiry_after(views, today + timedelta(days=5))
+            month = op.first_expiry_after(views, today + timedelta(days=28))
+            implied = op.earnings_move(views, earn) if earn else None
+            past = []
+            if earn and series is not None:
+                past = op.past_earnings_moves(series, options_data.past_earnings_dates(ticker))
+
+        rank = op.iv_rank(iv30, history)
+        table.add_row(
+            ticker, _money(spot), _plain_pct(iv30), _plain_pct(rv),
+            _plain_pct(rank) if rank is not None else f"[dim]{len(history)}d[/dim]",
+            f"±{week.expected_move_pct:.1%}" if week and week.expected_move_pct else "-",
+            f"±{month.expected_move_pct:.1%}" if month and month.expected_move_pct else "-",
+            f"{earn:%b %d}" if earn else "-",
+            f"±{implied:.1%}" if implied else "-",
+            f"±{mean(past):.1%} ({len(past)})" if past else "-",
+        )
+    console.print(table)
+    console.print("[dim]Moves are the at-the-money straddle price. IV rank needs 20+ days of "
+                  "stored readings (shown as Nd until then); run this daily to build it. "
+                  "Past avg is the close-to-close move across recent reports.[/dim]")
+
+
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="portfolio")
@@ -392,6 +453,10 @@ def main() -> None:
     news.add_argument("--no-score", action="store_true", help="skip sentiment scoring")
     news.add_argument("--why", action="store_true", help="show the LLM's reason under each headline")
     news.set_defaults(func=cmd_news)
+
+    opts = sub.add_parser("options", help="implied moves, IV and earnings expectations")
+    opts.add_argument("tickers", nargs="*", help="defaults to everything in the latest snapshot")
+    opts.set_defaults(func=cmd_options)
 
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())

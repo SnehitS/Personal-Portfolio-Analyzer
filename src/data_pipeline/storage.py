@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS sentiment (
     label TEXT, score REAL, confidence REAL, rationale TEXT, scored_at TEXT,
     PRIMARY KEY (ticker, url, model)
 );
+CREATE TABLE IF NOT EXISTS iv_history (
+    ticker TEXT NOT NULL, date TEXT NOT NULL, iv30 REAL, spot REAL,
+    PRIMARY KEY (ticker, date)
+);
 """
 
 
@@ -236,3 +240,18 @@ def load_sentiment(tickers: list[str] | None = None, model: str | None = None,
         rows = conn.execute(sql, params).fetchall()
     return [SentimentScore(r["ticker"], r["url"], r["model"], r["label"], r["score"],
                            r["confidence"], r["rationale"] or "") for r in rows]
+
+
+def save_iv(ticker: str, day: date, iv30: float, spot: float | None,
+            db_path: Path = DEFAULT_DB) -> None:
+    """One 30-day IV reading per ticker per day; a later run the same day replaces it."""
+    with connect(db_path) as conn:
+        conn.execute("INSERT OR REPLACE INTO iv_history (ticker, date, iv30, spot)"
+                     " VALUES (?, ?, ?, ?)", (ticker, day.isoformat(), iv30, spot))
+
+
+def load_iv_history(ticker: str, since: date, db_path: Path = DEFAULT_DB) -> list[float]:
+    with connect(db_path) as conn:
+        rows = conn.execute("SELECT iv30 FROM iv_history WHERE ticker = ? AND date >= ?"
+                            " ORDER BY date", (ticker, since.isoformat())).fetchall()
+    return [r["iv30"] for r in rows if r["iv30"] is not None]

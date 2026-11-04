@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -97,6 +97,25 @@ def first_expiry_after(views: list[ExpiryView], day: date) -> ExpiryView | None:
     Earnings after the close need the expiry after that date; callers pass day + 1 then."""
     later = [v for v in views if v.expiration >= day]
     return min(later, key=lambda v: v.expiration) if later else None
+
+
+def earnings_move(views: list[ExpiryView], earnings: date) -> float | None:
+    """Implied size of the earnings move alone, as a fraction of spot.
+
+    The straddle to the first expiry after earnings prices the event plus ordinary days.
+    Take the ordinary per-day variance from the last expiry before earnings and remove it:
+    event^2 = post^2 - pre^2 * (other days in post) / pre_days. Without a pre-earnings
+    expiry, fall back to the whole post-earnings straddle (an overestimate)."""
+    post = first_expiry_after(views, earnings + timedelta(days=1))
+    if post is None or post.expected_move_pct is None:
+        return None
+    pre = max((v for v in views if v.expiration < earnings and v.expected_move_pct
+               and v.days > 0), key=lambda v: v.expiration, default=None)
+    if pre is None:
+        return post.expected_move_pct
+    ordinary = pre.expected_move_pct ** 2 * max(post.days - 1, 0) / pre.days
+    event_var = post.expected_move_pct ** 2 - ordinary
+    return math.sqrt(event_var) if event_var > 0 else post.expected_move_pct
 
 
 def iv_rank(current: float | None, history: list[float]) -> float | None:
