@@ -285,7 +285,31 @@ def cmd_position(args, cfg: dict) -> None:
     for _, held, in_lots in metrics.lot_mismatches([h], {ticker: lots}):
         console.print(f"[yellow]Lots cover {in_lots:g} of {held:g} shares; some history is "
                       f"missing, so treat these dates and gains as incomplete.[/yellow]")
+    render_position_news(ticker, cfg)
     console.print(f"[dim]From snapshot taken {snap.taken_at:%Y-%m-%d %H:%M}[/dim]")
+
+
+def render_position_news(ticker: str, cfg: dict) -> None:
+    """Stored news for one ticker; `news` is what fetches and scores it."""
+    from src.sentiment_pipeline import aggregate
+
+    db = Path(cfg["database"])
+    days = cfg.get("news", {}).get("lookback_days", 7)
+    stored = storage.load_news([ticker], datetime.now(timezone.utc) - timedelta(days=days), db)
+    if not stored:
+        console.print(f"[dim]No stored news. Run `python -m src.cli news {ticker}`.[/dim]")
+        return
+    reads = aggregate.best_reads(stored, storage.load_sentiment([ticker], db_path=db))
+    ts = aggregate.summarize(reads, ticker, cfg.get("sentiment", {}).get("half_life_hours", 48))
+    console.print(f"\n[bold]News, last {days} days:[/bold] {ts.articles} articles, sentiment "
+                  f"{_sent(ts.score)} ({ts.label}), {ts.positive} positive / "
+                  f"{ts.negative} negative")
+    for label, r in (("Most positive", ts.most_positive), ("Most negative", ts.most_negative)):
+        if r:
+            why = f" [dim]{r.rationale}[/dim]" if r.rationale else ""
+            console.print(f"  {label} {_sent(r.score)}: {r.item.headline}{why}")
+    for n in [n for n in stored if n.kind == "filing"][:5]:
+        console.print(f"  [bold]{n.published_at:%b %d}[/bold] {n.headline}")
 
 
 def _portfolio_tickers(cfg: dict) -> list[str]:
