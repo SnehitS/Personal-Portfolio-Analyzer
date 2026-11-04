@@ -12,3 +12,8 @@ risk:
   option_expiry_window_days: 7  # flag option positions expiring within this many days
   high_short_interest: 0.15     # flag short interest above 15% of float
   correlation_threshold: 0.80   # report holding pairs whose daily returns correlate above this
+
+news:
+  lookback_days: 7
+  max_per_ticker: 25            # articles kept per ticker per run (filings are always kept)
+  sources: [sec, alphavantage, finnhub, yahoo]   # keyed providers are skipped without a key

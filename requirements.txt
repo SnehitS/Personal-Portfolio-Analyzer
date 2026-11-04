@@ -2,6 +2,7 @@ robin_stocks>=3.4
 pyotp>=2.9
 yfinance>=0.2.50
 pandas>=2.2
+requests>=2.31
 python-dotenv>=1.0
 PyYAML>=6.0
 tzdata>=2024.1  # time zone data for zoneinfo on Windows
