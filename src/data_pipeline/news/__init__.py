@@ -34,6 +34,32 @@ def headline_key(headline: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", headline.lower()))
 
 
+_CORP_WORDS = {"inc", "corp", "corporation", "co", "company", "ltd", "plc", "holdings",
+               "group", "the", "class", "sa", "nv", "ag", "llc", "lp", "trust", "etf"}
+
+
+def name_keyword(name: str | None) -> str | None:
+    """The distinctive word of a company name: "NVIDIA Corporation" -> "nvidia"."""
+    words = [w for w in re.findall(r"[a-z0-9&]+", (name or "").lower()) if w not in _CORP_WORDS]
+    return words[0] if words and len(words[0]) >= 3 else None
+
+
+def mention_relevance(item: NewsItem, name: str | None = None) -> float:
+    """1.0 if the headline names the company, 0.5 if only the summary does, else 0.1.
+    Feeds like Yahoo's mix in market roundups and other companies' news."""
+    ticker = re.escape(item.ticker)
+    pattern = rf"(?<![A-Za-z]){ticker}(?![A-Za-z])"
+    word = name_keyword(name)
+
+    def mentions(text: str) -> bool:
+        return bool(re.search(pattern, text)) or bool(
+            word and re.search(rf"\b{re.escape(word)}", text.lower()))
+
+    if mentions(item.headline):
+        return 1.0
+    return 0.5 if mentions(item.summary) else 0.1
+
+
 def dedupe(items: list[NewsItem]) -> list[NewsItem]:
     """One item per (ticker, URL) and per (ticker, headline), preferring PRIORITY order."""
     rank = {name: i for i, name in enumerate(PRIORITY)}
@@ -50,8 +76,11 @@ def dedupe(items: list[NewsItem]) -> list[NewsItem]:
     return sorted(out, key=lambda n: n.published_at, reverse=True)
 
 
-def fetch_news(tickers: list[str], cfg: dict, now: datetime | None = None) -> list[NewsItem]:
-    """News for each ticker from every enabled provider within `lookback_days`."""
+def fetch_news(tickers: list[str], cfg: dict, now: datetime | None = None,
+               names: dict[str, str] | None = None) -> list[NewsItem]:
+    """News for each ticker from every enabled provider within `lookback_days`.
+    `names` (ticker -> company name) sharpens the relevance guess for unscored feeds."""
+    names = names or {}
     now = now or datetime.now(timezone.utc)
     since = now - timedelta(days=cfg.get("lookback_days", 7))
     fetchers = _fetchers(cfg)
@@ -66,6 +95,9 @@ def fetch_news(tickers: list[str], cfg: dict, now: datetime | None = None) -> li
             except Exception as exc:  # one bad provider shouldn't sink the run
                 log.warning("%s news for %s failed: %s", name, ticker, exc)
 
+    for n in items:
+        if n.relevance is None and n.kind == "article":
+            n.relevance = mention_relevance(n, names.get(n.ticker))
     merged = dedupe(items)
     cap = cfg.get("max_per_ticker", 25)
     counts: dict[str, int] = {}

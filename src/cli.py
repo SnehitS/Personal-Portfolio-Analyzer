@@ -319,16 +319,16 @@ def cmd_news(args, cfg: dict) -> None:
     news_cfg = {**cfg.get("news", {}), **({"lookback_days": args.days} if args.days else {})}
     sent_cfg = cfg.get("sentiment", {})
     db = Path(cfg["database"])
+    names = {h.ticker: h.name for h in snap.holdings if h.name} if snap else {}
     if not args.no_fetch:
         with console.status(f"Fetching news for {len(tickers)} tickers..."):
-            items = fetch_news(tickers, news_cfg)
+            items = fetch_news(tickers, news_cfg, names=names)
             added = storage.save_news(items, db)
         console.print(f"Fetched {len(items)} items, {added} new.")
 
     since = datetime.now(timezone.utc) - timedelta(days=news_cfg.get("lookback_days", 7))
     stored = storage.load_news(tickers, since, db)
     if not args.no_score:
-        names = {h.ticker: h.name for h in snap.holdings if h.name} if snap else {}
         with console.status("Scoring sentiment..."):
             counts = aggregate.score_new(stored, sent_cfg, db, names)
         if counts:
