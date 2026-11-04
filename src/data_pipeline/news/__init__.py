@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from src.data_pipeline.models import NewsItem
-from src.data_pipeline.news import alphavantage, finnhub, yahoo
+from src.data_pipeline.news import alphavantage, finnhub, sec_edgar, yahoo
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ PRIORITY = ["sec", "alphavantage", "finnhub", "yahoo"]
 
 def _fetchers(cfg: dict) -> dict:
     """Provider name -> fetch(ticker, since). Keyed providers only appear with a key."""
-    out = {"yahoo": lambda ticker, since: yahoo.fetch(ticker)}
+    out = {"yahoo": lambda ticker, since: yahoo.fetch(ticker), "sec": sec_edgar.Fetcher()}
     if finnhub.api_key():
         out["finnhub"] = finnhub.fetch
     if alphavantage.api_key():
