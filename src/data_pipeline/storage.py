@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import asdict, fields
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from src.data_pipeline.models import (
-    AccountSummary, Holding, OptionPosition, PortfolioSnapshot, Transaction,
+    AccountSummary, Holding, NewsItem, OptionPosition, PortfolioSnapshot, SentimentScore,
+    Transaction,
 )
 
 DEFAULT_DB = Path("data/processed/portfolio.db")
@@ -42,6 +43,19 @@ CREATE TABLE IF NOT EXISTS transactions (
     source TEXT NOT NULL, ref TEXT NOT NULL,
     ticker TEXT, kind TEXT, date TEXT, quantity REAL, price REAL, amount REAL,
     PRIMARY KEY (source, ref)
+);
+CREATE TABLE IF NOT EXISTS news (
+    ticker TEXT NOT NULL, url TEXT NOT NULL,
+    source TEXT, published_at TEXT, headline TEXT, summary TEXT, publisher TEXT,
+    kind TEXT, form TEXT, provider_sentiment REAL, relevance REAL,
+    fetched_at TEXT,
+    PRIMARY KEY (ticker, url)
+);
+CREATE INDEX IF NOT EXISTS news_by_date ON news (ticker, published_at);
+CREATE TABLE IF NOT EXISTS sentiment (
+    ticker TEXT NOT NULL, url TEXT NOT NULL, model TEXT NOT NULL,
+    label TEXT, score REAL, confidence REAL, rationale TEXT, scored_at TEXT,
+    PRIMARY KEY (ticker, url, model)
 );
 """
 
@@ -150,3 +164,75 @@ def _from_row(cls, row: sqlite3.Row):
 
 def _sql_values(row: dict) -> list:
     return [v.isoformat() if hasattr(v, "isoformat") else v for v in row.values()]
+
+
+def _utc_iso(dt: datetime) -> str:
+    """News times are stored as UTC ISO strings so they sort and compare as text.
+    Naive datetimes are taken to be UTC."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def save_news(items: list[NewsItem], db_path: Path = DEFAULT_DB) -> int:
+    """Insert new items; ones already stored (same ticker and URL) are left alone.
+    Returns how many were new."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect(db_path) as conn:
+        before = conn.total_changes
+        conn.executemany(
+            "INSERT OR IGNORE INTO news (ticker, url, source, published_at, headline, summary,"
+            " publisher, kind, form, provider_sentiment, relevance, fetched_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(n.ticker, n.url, n.source, _utc_iso(n.published_at),
+              n.headline, n.summary, n.publisher, n.kind, n.form, n.provider_sentiment,
+              n.relevance, now) for n in items],
+        )
+        return conn.total_changes - before
+
+
+def load_news(tickers: list[str] | None = None, since: datetime | None = None,
+              db_path: Path = DEFAULT_DB) -> list[NewsItem]:
+    """Stored news, newest first, optionally for some tickers and after a time."""
+    sql, params = "SELECT * FROM news WHERE 1=1", []
+    if tickers:
+        sql += f" AND ticker IN ({', '.join('?' * len(tickers))})"
+        params += [t.upper() for t in tickers]
+    if since:
+        sql += " AND published_at >= ?"
+        params.append(_utc_iso(since))
+    with connect(db_path) as conn:
+        rows = conn.execute(sql + " ORDER BY published_at DESC", params).fetchall()
+    return [NewsItem(
+        ticker=r["ticker"], source=r["source"],
+        published_at=datetime.fromisoformat(r["published_at"]), headline=r["headline"],
+        url=r["url"], summary=r["summary"] or "", publisher=r["publisher"] or "",
+        kind=r["kind"] or "article", form=r["form"] or "",
+        provider_sentiment=r["provider_sentiment"], relevance=r["relevance"],
+    ) for r in rows]
+
+
+def save_sentiment(scores: list[SentimentScore], db_path: Path = DEFAULT_DB) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect(db_path) as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO sentiment (ticker, url, model, label, score, confidence,"
+            " rationale, scored_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(s.ticker, s.url, s.model, s.label, s.score, s.confidence, s.rationale, now)
+             for s in scores],
+        )
+
+
+def load_sentiment(tickers: list[str] | None = None, model: str | None = None,
+                   db_path: Path = DEFAULT_DB) -> list[SentimentScore]:
+    sql, params = "SELECT * FROM sentiment WHERE 1=1", []
+    if tickers:
+        sql += f" AND ticker IN ({', '.join('?' * len(tickers))})"
+        params += [t.upper() for t in tickers]
+    if model:
+        sql += " AND model = ?"
+        params.append(model)
+    with connect(db_path) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [SentimentScore(r["ticker"], r["url"], r["model"], r["label"], r["score"],
+                           r["confidence"], r["rationale"] or "") for r in rows]

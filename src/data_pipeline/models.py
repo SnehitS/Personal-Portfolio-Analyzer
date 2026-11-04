@@ -160,3 +160,34 @@ class PortfolioSnapshot:
     @property
     def total_equity(self) -> float:
         return self.holdings_value + self.account.cash
+
+
+@dataclass
+class NewsItem:
+    """One article or filing about a ticker. `kind` is "article" or "filing"."""
+
+    ticker: str
+    source: str            # provider it came from: yahoo, finnhub, alphavantage, sec
+    published_at: datetime  # UTC
+    headline: str
+    url: str
+    summary: str = ""
+    publisher: str = ""
+    kind: str = "article"
+    form: str = ""         # SEC form type for filings (8-K, 10-Q, 4, ...)
+    # Sentiment the provider ships with the article (Alpha Vantage), -1 bearish .. +1 bullish
+    provider_sentiment: float | None = None
+    relevance: float | None = None  # 0..1, how much the article is about this ticker
+
+
+@dataclass
+class SentimentScore:
+    """A model's read on one news item for one ticker."""
+
+    ticker: str
+    url: str
+    model: str             # "finbert" or the LLM model ID
+    label: str             # positive / negative / neutral
+    score: float           # -1 bearish .. +1 bullish
+    confidence: float | None = None
+    rationale: str = ""    # LLMs explain themselves; FinBERT leaves this empty
