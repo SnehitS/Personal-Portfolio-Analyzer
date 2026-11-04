@@ -1,0 +1,5 @@
+# Optional: local FinBERT sentiment. CPU-only torch keeps the download small:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch
+#   pip install -r requirements-sentiment.txt
+torch>=2.5
+transformers>=4.45
