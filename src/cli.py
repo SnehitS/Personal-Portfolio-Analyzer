@@ -6,6 +6,7 @@
     python -m src.cli position NVDA               # deep dive from the latest snapshot
     python -m src.cli news                        # fetch and show news for your holdings
     python -m src.cli options                     # implied moves and IV for your holdings
+    python -m src.cli catalysts                   # upcoming events for your holdings
 """
 
 from __future__ import annotations
@@ -426,6 +427,49 @@ def cmd_options(args, cfg: dict) -> None:
                   "Past avg is the close-to-close move across recent reports.[/dim]")
 
 
+def cmd_catalysts(args, cfg: dict) -> None:
+    from src.data_pipeline import earnings_calendar, options_data
+    from src.portfolio_analysis import catalysts
+    from src.portfolio_analysis import options as op
+
+    snap = storage.load_latest_snapshot(Path(cfg["database"]))
+    if snap is None:
+        console.print("No snapshots yet. Run `python -m src.cli snapshot` first.")
+        return
+    cat_cfg = cfg.get("catalysts", {})
+    days = args.days or cat_cfg.get("horizon_days", 30)
+    today = date.today()
+    tickers = [h.ticker for h in snap.holdings if h.sector != "ETF"]
+    with console.status("Checking earnings calendar..."):
+        detail = earnings_calendar.fetch(tickers, today, today + timedelta(days=days))
+    events = catalysts.build(snap, today, days, cat_cfg.get("macro_events"), detail)
+    if not events:
+        console.print(f"Nothing scheduled in the next {days} days.")
+        return
+
+    moves: dict[str, float | None] = {}
+    if args.moves:
+        for c in events:
+            if c.kind == "earnings" and c.ticker not in moves:
+                with console.status(f"Option chains for {c.ticker}..."):
+                    views = options_data.option_views(
+                        c.ticker, must_cover=[c.day + timedelta(days=1)])
+                    moves[c.ticker] = op.earnings_move(views, c.day)
+
+    table = Table(title=f"Catalysts, next {days} days (snapshot {snap.taken_at:%Y-%m-%d})")
+    for col in ("Date", "In", "Ticker", "Weight", "Event", "Detail"):
+        table.add_column(col, justify="right" if col in ("In", "Weight") else "left")
+    for c in events:
+        detail_text = c.detail
+        if c.ticker in moves and c.kind == "earnings" and moves[c.ticker]:
+            detail_text = ", ".join(filter(None, [detail_text,
+                                                  f"options imply ±{moves[c.ticker]:.1%}"]))
+        style = "bold" if c.kind == "earnings" and c.weight >= 0.05 else None
+        table.add_row(f"{c.day:%a %b %d}", f"{(c.day - today).days}d", c.ticker or "market",
+                      f"{c.weight:.0%}" if c.ticker else "", c.kind, detail_text, style=style)
+    console.print(table)
+
+
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="portfolio")
@@ -457,6 +501,12 @@ def main() -> None:
     opts = sub.add_parser("options", help="implied moves, IV and earnings expectations")
     opts.add_argument("tickers", nargs="*", help="defaults to everything in the latest snapshot")
     opts.set_defaults(func=cmd_options)
+
+    cats = sub.add_parser("catalysts", help="upcoming earnings, dividends, expiries and more")
+    cats.add_argument("--days", type=int, help="how far ahead to look (default from settings)")
+    cats.add_argument("--moves", action="store_true",
+                      help="add the options-implied earnings move (slower: fetches chains)")
+    cats.set_defaults(func=cmd_catalysts)
 
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
