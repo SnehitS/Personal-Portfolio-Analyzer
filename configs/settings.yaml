@@ -18,3 +18,9 @@ news:
   max_per_ticker: 25            # articles kept per ticker per run (filings are always kept)
   sources: [sec, alphavantage, finnhub, yahoo]   # keyed providers are skipped without a key
   alphavantage_max_calls: 20    # free tier is 25 calls per day
+
+sentiment:
+  models: [finbert, llm]        # either is skipped if its package or API key is missing
+  llm_model: claude-opus-5-5
+  llm_batch_size: 25            # headlines per request
+  half_life_hours: 48           # older stories count half as much every this many hours

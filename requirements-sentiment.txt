@@ -1,5 +1,10 @@
-# Optional: local FinBERT sentiment. CPU-only torch keeps the download small:
+# Optional sentiment models. Either one works alone; with neither, only Alpha Vantage's
+# own scores are shown.
+
+# LLM sentiment via the Claude API (needs ANTHROPIC_API_KEY)
+anthropic>=2.4
+
+# Local FinBERT. Install CPU-only torch first to keep the download small:
 #   pip install --index-url https://download.pytorch.org/whl/cpu torch
-#   pip install -r requirements-sentiment.txt
 torch>=2.5
 transformers>=4.45
