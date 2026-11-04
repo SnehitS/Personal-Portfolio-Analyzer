@@ -12,7 +12,7 @@ Personal-Portfolio-Analyzer/
 ├── configs/                     # Config files (API keys/env mappings/thresholds later)
 ├── data/
 │   ├── portfolio_raw/           # Raw portfolio inputs (CSV/JSON exports)
-│   ├── news_raw/                # Raw news data from APIs/scrapers
+│   ├── news_raw/                # Cached SEC ticker -> CIK map
 │   └── processed/               # Cleaned/feature-ready datasets
 ├── docs/                        # Product notes, data dictionary, workflow docs
 ├── models/
@@ -62,6 +62,38 @@ Tax lots are rebuilt FIFO from order history, with stock splits applied from yfi
 - Snapshots go to `data/processed/portfolio.db` (SQLite). `data/`, `reports/`, `.env`, `*.csv` and `*.db` are gitignored.
 - Thresholds for risk flags live in `configs/settings.yaml`.
 
+## Stage 2: News, sentiment, catalysts and options (done)
+
+```bash
+pip install -r requirements-sentiment.txt   # optional: FinBERT and/or Claude sentiment
+python -m src.cli news                # fetch + score news for every holding
+python -m src.cli news NVDA --why     # one ticker, with the LLM's reason per headline
+python -m src.cli catalysts --moves   # next 30 days of events, with implied earnings moves
+python -m src.cli options             # IV, realized vol, expected moves, earnings vs history
+```
+
+With no tickers, each command uses the latest snapshot's holdings (and option underlyings).
+
+**News** comes from every provider you have set up, de-duplicated across them:
+
+| Source | Key | What it adds |
+|---|---|---|
+| Yahoo Finance RSS | none | latest ~20 headlines per ticker |
+| SEC EDGAR | none (set `SEC_USER_AGENT`) | 8-K (item codes decoded), 10-Q/10-K, Form 4 insider trades, 13D/G, S-3 |
+| Finnhub | `FINNHUB_API_KEY` | company news with summaries |
+| Alpha Vantage | `ALPHAVANTAGE_API_KEY` | articles with its own per-ticker sentiment and relevance (25 calls/day, capped per run) |
+
+**Sentiment** gives each article one score from -1 to +1, using the best model available: Claude (`ANTHROPIC_API_KEY`), then local FinBERT, then Alpha Vantage's own score. Filings aren't scored. Claude reads all of a ticker's headlines in one request, judges the effect on that stock rather than the article's tone, and gives a one-line reason. Each article is only scored once per model. A ticker's read is a weighted average: newer articles count more (48h half-life), and so do relevant ones. Headlines that never mention the company, like Yahoo's market roundups, count for 10%.
+
+**Catalysts:** earnings (with before/after-market timing and EPS estimate from Finnhub), ex-dividend dates, expiries of options you hold, tax lots turning long-term, and macro dates you list under `catalysts.macro_events` in `configs/settings.yaml`.
+
+**Options** (from yfinance chains):
+- Expected move to an expiry is the at-the-money straddle price.
+- 30-day IV is interpolated across expiries, next to 30-day realized volatility.
+- The earnings move isolates the event: the post-earnings straddle minus the variance of ordinary days. It's shown next to the stock's average actual move over recent reports.
+- Each run stores that day's 30-day IV, so IV rank appears once 20+ days have built up. Run `options` daily, e.g. from Task Scheduler.
+
+News, scores and IV history live in the same SQLite file as the snapshots.
+
 ## Roadmap
-- **Stage 2:** per-ticker news (Finnhub, Alpha Vantage, SEC EDGAR), FinBERT + LLM sentiment, earnings/catalyst calendar, options data (IV, expected moves).
 - **Stage 3:** daily/weekly reports with position moves, buy/sell/trim ideas, cash deployment, new long/short and options ideas, and later prediction markets.
