@@ -10,7 +10,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from src.data_pipeline.models import NewsItem
-from src.data_pipeline.news import yahoo
+from src.data_pipeline.news import alphavantage, finnhub, yahoo
 
 log = logging.getLogger(__name__)
 
@@ -19,8 +19,14 @@ log = logging.getLogger(__name__)
 PRIORITY = ["sec", "alphavantage", "finnhub", "yahoo"]
 
 
-def _fetchers() -> dict:
-    return {"yahoo": yahoo.fetch}
+def _fetchers(cfg: dict) -> dict:
+    """Provider name -> fetch(ticker, since). Keyed providers only appear with a key."""
+    out = {"yahoo": lambda ticker, since: yahoo.fetch(ticker)}
+    if finnhub.api_key():
+        out["finnhub"] = finnhub.fetch
+    if alphavantage.api_key():
+        out["alphavantage"] = alphavantage.Fetcher(cfg.get("alphavantage_max_calls", 20))
+    return out
 
 
 def headline_key(headline: str) -> str:
@@ -48,7 +54,7 @@ def fetch_news(tickers: list[str], cfg: dict, now: datetime | None = None) -> li
     """News for each ticker from every enabled provider within `lookback_days`."""
     now = now or datetime.now(timezone.utc)
     since = now - timedelta(days=cfg.get("lookback_days", 7))
-    fetchers = _fetchers()
+    fetchers = _fetchers(cfg)
     items: list[NewsItem] = []
     for name in cfg.get("sources", list(fetchers)):
         fetch = fetchers.get(name)
@@ -56,7 +62,7 @@ def fetch_news(tickers: list[str], cfg: dict, now: datetime | None = None) -> li
             continue
         for ticker in tickers:
             try:
-                items += [n for n in fetch(ticker) if n.published_at >= since]
+                items += [n for n in fetch(ticker, since) if n.published_at >= since]
             except Exception as exc:  # one bad provider shouldn't sink the run
                 log.warning("%s news for %s failed: %s", name, ticker, exc)
 

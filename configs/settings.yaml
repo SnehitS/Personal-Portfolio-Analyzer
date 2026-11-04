@@ -17,3 +17,4 @@ news:
   lookback_days: 7
   max_per_ticker: 25            # articles kept per ticker per run (filings are always kept)
   sources: [sec, alphavantage, finnhub, yahoo]   # keyed providers are skipped without a key
+  alphavantage_max_calls: 20    # free tier is 25 calls per day
