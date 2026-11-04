@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from pathlib import Path
 
 from src.data_pipeline.models import NewsItem, SentimentScore
 from src.sentiment_pipeline.finbert import text_for
@@ -55,6 +57,13 @@ def available() -> bool:
     except ImportError:
         return False
     return True
+
+
+def has_credentials() -> bool:
+    """The SDK reads an API key, an auth token, or a profile saved by `ant auth login`."""
+    if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
+        return True
+    return bool(os.getenv("ANTHROPIC_PROFILE")) or (Path.home() / ".config/anthropic").exists()
 
 
 def build_prompt(ticker: str, name: str | None, items: list[NewsItem]) -> str:

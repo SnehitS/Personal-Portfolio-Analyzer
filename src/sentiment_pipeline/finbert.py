@@ -52,7 +52,9 @@ class FinBertScorer:
         self._pipe = pipeline("text-classification", model=MODEL_ID, top_k=None,
                               truncation=True, max_length=512, device="cpu")
 
-    def score(self, items: list[NewsItem]) -> list[SentimentScore]:
+    def score(self, items: list[NewsItem], names: dict[str, str] | None = None
+              ) -> list[SentimentScore]:
+        """`names` is unused; it keeps the signature the same as the LLM scorer's."""
         articles = [n for n in items if n.kind == "article"]  # filings have no tone to read
         if not articles:
             return []

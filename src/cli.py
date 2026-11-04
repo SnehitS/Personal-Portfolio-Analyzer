@@ -300,14 +300,24 @@ def _ago(when: datetime) -> str:
     return f"{hours:.0f}h ago" if hours < 48 else f"{hours / 24:.0f}d ago"
 
 
+def _sent(score: float | None) -> str:
+    if score is None:
+        return "-"
+    color = "green" if score >= 0.15 else "red" if score <= -0.15 else "yellow"
+    return f"[{color}]{score:+.2f}[/{color}]"
+
+
 def cmd_news(args, cfg: dict) -> None:
     from src.data_pipeline.news import fetch_news
+    from src.sentiment_pipeline import aggregate
 
+    snap = storage.load_latest_snapshot(Path(cfg["database"]))
     tickers = [t.upper() for t in args.tickers] or _portfolio_tickers(cfg)
     if not tickers:
         console.print("No tickers given and no snapshot yet. Try `news AAPL` or run `snapshot`.")
         return
     news_cfg = {**cfg.get("news", {}), **({"lookback_days": args.days} if args.days else {})}
+    sent_cfg = cfg.get("sentiment", {})
     db = Path(cfg["database"])
     if not args.no_fetch:
         with console.status(f"Fetching news for {len(tickers)} tickers..."):
@@ -317,16 +327,41 @@ def cmd_news(args, cfg: dict) -> None:
 
     since = datetime.now(timezone.utc) - timedelta(days=news_cfg.get("lookback_days", 7))
     stored = storage.load_news(tickers, since, db)
+    if not args.no_score:
+        names = {h.ticker: h.name for h in snap.holdings if h.name} if snap else {}
+        with console.status("Scoring sentiment..."):
+            counts = aggregate.score_new(stored, sent_cfg, db, names)
+        if counts:
+            console.print("Scored: " + ", ".join(f"{m} {n}" for m, n in counts.items()))
+    reads = aggregate.best_reads(stored, storage.load_sentiment(tickers, db_path=db))
+    read_by_key = {(r.item.ticker, r.item.url): r for r in reads}
+    half_life = sent_cfg.get("half_life_hours", 48)
+
+    summary = Table(title=f"News sentiment, last {news_cfg.get('lookback_days', 7)} days")
+    for col in ("Ticker", "Score", "Read", "Articles", "+ / -", "Filings"):
+        summary.add_column(col, justify="left" if col == "Ticker" else "right")
+    for ticker in tickers:
+        ts = aggregate.summarize(reads, ticker, half_life)
+        filings = sum(1 for n in stored if n.ticker == ticker and n.kind == "filing")
+        if ts.articles or filings:
+            summary.add_row(ticker, _sent(ts.score), ts.label, str(ts.articles),
+                            f"{ts.positive} / {ts.negative}", str(filings))
+    console.print(summary)
+
     for ticker in tickers:
         mine = [n for n in stored if n.ticker == ticker]
         if not mine:
             continue
-        table = Table(title=f"{ticker} ({len(mine)})", title_justify="left", show_lines=False)
-        for col in ("When", "Source", "Headline"):
-            table.add_column(col, overflow="fold")
+        table = Table(title=f"{ticker} ({len(mine)})", title_justify="left")
+        for col in ("When", "Source", "Sent.", "Headline"):
+            table.add_column(col, overflow="fold", justify="right" if col == "Sent." else "left")
         for n in mine[:args.limit]:
+            read = read_by_key.get((n.ticker, n.url))
             head = f"[bold]{n.headline}[/bold]" if n.kind == "filing" else n.headline
-            table.add_row(_ago(n.published_at), n.publisher or n.source, head)
+            if read and read.rationale and args.why:
+                head += f"\n[dim]{read.rationale}[/dim]"
+            table.add_row(_ago(n.published_at), n.publisher or n.source,
+                          _sent(read.score) if read else "-", head)
         console.print(table)
 
 
@@ -354,6 +389,8 @@ def main() -> None:
     news.add_argument("--days", type=int, help="lookback window (default from settings)")
     news.add_argument("--limit", type=int, default=10, help="rows shown per ticker")
     news.add_argument("--no-fetch", action="store_true", help="only show what's stored")
+    news.add_argument("--no-score", action="store_true", help="skip sentiment scoring")
+    news.add_argument("--why", action="store_true", help="show the LLM's reason under each headline")
     news.set_defaults(func=cmd_news)
 
     args = parser.parse_args()
