@@ -4,12 +4,13 @@
     python -m src.cli snapshot --csv export.csv   # rebuild from a Robinhood activity CSV
     python -m src.cli history                     # list saved snapshots
     python -m src.cli position NVDA               # deep dive from the latest snapshot
+    python -m src.cli news                        # fetch and show news for your holdings
 """
 
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -285,6 +286,50 @@ def cmd_position(args, cfg: dict) -> None:
     console.print(f"[dim]From snapshot taken {snap.taken_at:%Y-%m-%d %H:%M}[/dim]")
 
 
+def _portfolio_tickers(cfg: dict) -> list[str]:
+    """Holdings (largest first) plus option underlyings from the latest snapshot."""
+    snap = storage.load_latest_snapshot(Path(cfg["database"]))
+    if snap is None:
+        return []
+    tickers = [h.ticker for h in sorted(snap.holdings, key=lambda h: -h.market_value)]
+    return tickers + sorted({o.underlying for o in snap.options} - set(tickers))
+
+
+def _ago(when: datetime) -> str:
+    hours = (datetime.now(timezone.utc) - when).total_seconds() / 3600
+    return f"{hours:.0f}h ago" if hours < 48 else f"{hours / 24:.0f}d ago"
+
+
+def cmd_news(args, cfg: dict) -> None:
+    from src.data_pipeline.news import fetch_news
+
+    tickers = [t.upper() for t in args.tickers] or _portfolio_tickers(cfg)
+    if not tickers:
+        console.print("No tickers given and no snapshot yet. Try `news AAPL` or run `snapshot`.")
+        return
+    news_cfg = {**cfg.get("news", {}), **({"lookback_days": args.days} if args.days else {})}
+    db = Path(cfg["database"])
+    if not args.no_fetch:
+        with console.status(f"Fetching news for {len(tickers)} tickers..."):
+            items = fetch_news(tickers, news_cfg)
+            added = storage.save_news(items, db)
+        console.print(f"Fetched {len(items)} items, {added} new.")
+
+    since = datetime.now(timezone.utc) - timedelta(days=news_cfg.get("lookback_days", 7))
+    stored = storage.load_news(tickers, since, db)
+    for ticker in tickers:
+        mine = [n for n in stored if n.ticker == ticker]
+        if not mine:
+            continue
+        table = Table(title=f"{ticker} ({len(mine)})", title_justify="left", show_lines=False)
+        for col in ("When", "Source", "Headline"):
+            table.add_column(col, overflow="fold")
+        for n in mine[:args.limit]:
+            head = f"[bold]{n.headline}[/bold]" if n.kind == "filing" else n.headline
+            table.add_row(_ago(n.published_at), n.publisher or n.source, head)
+        console.print(table)
+
+
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="portfolio")
@@ -303,6 +348,13 @@ def main() -> None:
     pos = sub.add_parser("position", help="deep dive on one holding (latest snapshot)")
     pos.add_argument("ticker")
     pos.set_defaults(func=cmd_position)
+
+    news = sub.add_parser("news", help="fetch and show news and SEC filings for holdings")
+    news.add_argument("tickers", nargs="*", help="defaults to everything in the latest snapshot")
+    news.add_argument("--days", type=int, help="lookback window (default from settings)")
+    news.add_argument("--limit", type=int, default=10, help="rows shown per ticker")
+    news.add_argument("--no-fetch", action="store_true", help="only show what's stored")
+    news.set_defaults(func=cmd_news)
 
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())

@@ -15,9 +15,9 @@ log = logging.getLogger(__name__)
 FEED = "https://feeds.finance.yahoo.com/rss/2.0/headline"
 
 
-def parse_feed(ticker: str, xml_text: str) -> list[NewsItem]:
+def parse_feed(ticker: str, xml: bytes | str) -> list[NewsItem]:
     try:
-        root = ET.fromstring(xml_text)
+        root = ET.fromstring(xml)  # bytes, so the XML declaration picks the encoding
     except ET.ParseError as exc:
         log.warning("Yahoo RSS for %s didn't parse: %s", ticker, exc)
         return []
@@ -43,4 +43,4 @@ def parse_feed(ticker: str, xml_text: str) -> list[NewsItem]:
 def fetch(ticker: str) -> list[NewsItem]:
     resp = http.get(FEED, {"s": ticker, "region": "US", "lang": "en-US"},
                     min_interval=0.5, user_agent="Mozilla/5.0")
-    return parse_feed(ticker, resp.text) if resp is not None else []
+    return parse_feed(ticker, resp.content) if resp is not None else []
