@@ -9,11 +9,11 @@ Personal portfolio analyzer for:
 
 ```
 Personal-Portfolio-Analyzer/
-├── configs/                     # Config files (API keys/env mappings/thresholds later)
+├── configs/                     # settings.yaml: thresholds, news sources, sentiment and catalyst options
 ├── data/
 │   ├── portfolio_raw/           # Raw portfolio inputs (CSV/JSON exports)
 │   ├── news_raw/                # Cached SEC ticker -> CIK map
-│   └── processed/               # Cleaned/feature-ready datasets
+│   └── processed/               # portfolio.db (SQLite): snapshots, news, sentiment, IV history
 ├── docs/                        # Product notes, data dictionary, workflow docs
 ├── models/
 │   ├── trained/                 # Saved model artifacts
@@ -26,11 +26,11 @@ Personal-Portfolio-Analyzer/
 │   ├── weekly/                  # Weekly summary updates
 │   └── alerts/                  # Risk/event-based update outputs
 ├── src/
-│   ├── data_pipeline/           # Ingestion + preprocessing modules (to be added)
-│   ├── sentiment_pipeline/      # News sentiment workflow modules (to be added)
-│   ├── portfolio_analysis/      # Portfolio analytics modules (to be added)
-│   └── update_engine/           # Update/notification logic modules (to be added)
-└── tests/                       # Test structure for future code
+│   ├── data_pipeline/           # Robinhood/CSV ingestion, market data, news providers, storage
+│   ├── sentiment_pipeline/      # FinBERT and Claude scoring, per-ticker aggregation
+│   ├── portfolio_analysis/      # Metrics, technicals, options and catalyst calendar
+│   └── update_engine/           # Daily/weekly reports and alerts (Stage 3)
+└── tests/                       # Offline unit tests for Stages 1 and 2
 ```
 
 ## Stage 1: Portfolio data (done)
