@@ -72,3 +72,50 @@ def test_compare_snapshots():
     assert change.equity_after == pytest.approx(1745.0)
     assert change.net_deposits == pytest.approx(200.0)      # only the deposit after Nov 6
     assert change.market_gain == pytest.approx(-225.0)
+
+
+def test_daily_report_sections():
+    from datetime import datetime, timezone
+
+    from src.data_pipeline.models import AccountSummary, Holding, NewsItem, PortfolioSnapshot
+    from src.portfolio_analysis.catalysts import Catalyst
+    from src.sentiment_pipeline.aggregate import ArticleRead, TickerSentiment
+    from src.update_engine import daily
+    from src.update_engine.changes import compare
+
+    before = PortfolioSnapshot("robinhood", datetime(2026, 11, 6, 16), AccountSummary(500.0),
+                               [Holding("AAA", 10, 90.0, 100.0)])
+    after = PortfolioSnapshot("robinhood", datetime(2026, 11, 7, 16), AccountSummary(440.0),
+                              [Holding("AAA", 10, 90.0, 110.0, previous_close=105.0),
+                               Holding("BBB", 3, 20.0, 20.0)])
+    item = NewsItem("AAA", "yahoo", datetime(2026, 11, 7, tzinfo=timezone.utc),
+                    "AAA beats estimates", "https://x/1")
+    best = ArticleRead(item, 0.8, "positive", "finbert")
+    sent = [TickerSentiment("AAA", 0.6, 3, 2, 0, most_positive=best),
+            TickerSentiment("BBB", None, 0, 0, 0)]
+    events = [Catalyst(date(2026, 11, 10), "AAA", "earnings", "after close")]
+
+    md = daily.render(after, date(2026, 11, 7), compare(before, after), sent, events,
+                      ["AAA is 68% of the portfolio"])
+    assert md.startswith("# Daily report: Sat Nov 07, 2026")
+    assert "+$100 (+6.67%) from the market" in md
+    assert "| AAA | +10.00% | +$100 | 68.8% |" in md
+    assert "Opened **BBB**: +3 shares" in md
+    assert "| AAA | bullish | +0.60 | 3 |" in md and "| BBB |" not in md.split("News")[1]
+    assert "- **AAA** (+0.80): AAA beats estimates" in md
+    assert "| Tue Nov 10 | 3d | AAA | earnings | after close |" in md
+    assert "## Risk flags" in md
+
+
+def test_daily_report_first_snapshot_uses_previous_close():
+    from datetime import datetime
+
+    from src.data_pipeline.models import AccountSummary, Holding, PortfolioSnapshot
+    from src.update_engine import daily
+
+    snap = PortfolioSnapshot("csv", datetime(2026, 11, 7, 16), AccountSummary(0.0),
+                             [Holding("AAA", 10, 90.0, 99.0, previous_close=100.0)])
+    md = daily.render(snap, date(2026, 11, 7))
+    assert "| Ticker | Today | P/L | Weight |" in md
+    assert "| AAA | -1.00% | -$10 | 100.0% |" in md
+    assert "Since last snapshot" not in md and "## Risk flags" not in md
