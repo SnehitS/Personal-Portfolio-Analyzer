@@ -133,8 +133,29 @@ def list_snapshots(limit: int = 30, db_path: Path = DEFAULT_DB) -> list[sqlite3.
 
 
 def load_latest_snapshot(db_path: Path = DEFAULT_DB) -> PortfolioSnapshot | None:
+    return _load_where("1 = 1", (), db_path, order="id DESC")
+
+
+def load_snapshot(snapshot_id: int, db_path: Path = DEFAULT_DB) -> PortfolioSnapshot | None:
+    return _load_where("id = ?", (snapshot_id,), db_path)
+
+
+def load_snapshot_before(when: datetime, source: str | None = None,
+                         db_path: Path = DEFAULT_DB) -> PortfolioSnapshot | None:
+    """The newest snapshot taken strictly before `when` (naive local time, like `taken_at`),
+    optionally from one source, so a report can compare against yesterday's run."""
+    where, params = "taken_at < ?", [when.isoformat(timespec="seconds")]
+    if source:
+        where += " AND source = ?"
+        params.append(source)
+    return _load_where(where, tuple(params), db_path)
+
+
+def _load_where(where: str, params: tuple, db_path: Path,
+                order: str = "taken_at DESC, id DESC") -> PortfolioSnapshot | None:
     with connect(db_path) as conn:
-        snap = conn.execute("SELECT * FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+        snap = conn.execute(f"SELECT * FROM snapshots WHERE {where} ORDER BY {order} LIMIT 1",
+                            params).fetchone()
         if snap is None:
             return None
         holdings = [_from_row(Holding, r) for r in conn.execute(
