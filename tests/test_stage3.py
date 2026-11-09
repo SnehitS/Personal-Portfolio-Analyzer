@@ -119,3 +119,24 @@ def test_daily_report_first_snapshot_uses_previous_close():
     assert "| Ticker | Today | P/L | Weight |" in md
     assert "| AAA | -1.00% | -$10 | 100.0% |" in md
     assert "Since last snapshot" not in md and "## Risk flags" not in md
+
+
+def test_weekly_report_labels_and_week_start():
+    from datetime import datetime
+
+    from src.data_pipeline.models import AccountSummary, Holding, PortfolioSnapshot
+    from src.update_engine import weekly
+    from src.update_engine.changes import compare
+
+    assert weekly.week_start(date(2026, 11, 13)) == datetime(2026, 11, 9)   # Fri -> Mon
+    assert weekly.week_start(date(2026, 11, 9)) == datetime(2026, 11, 9)    # Mon -> Mon
+
+    # Bought 2 more shares with cash at an unchanged price: no market gain
+    before = PortfolioSnapshot("robinhood", datetime(2026, 11, 6, 16), AccountSummary(200.0),
+                               [Holding("AAA", 10, 90.0, 100.0)])
+    after = PortfolioSnapshot("robinhood", datetime(2026, 11, 13, 16), AccountSummary(0.0),
+                              [Holding("AAA", 12, 90.0, 100.0)])
+    md = weekly.render(after, date(2026, 11, 13), compare(before, after))
+    assert md.startswith("# Weekly report: week of Nov 09, 2026")
+    assert "- **This week:** +$0 (+0.00%) from the market" in md
+    assert "## Position changes this week" in md

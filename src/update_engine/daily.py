@@ -28,7 +28,8 @@ def _table(headers: list[str], rows: list[list[str]], right: set[int] = frozense
             *("| " + " | ".join(r) + " |" for r in rows)]
 
 
-def _summary(snap: PortfolioSnapshot, change: PortfolioChange | None) -> list[str]:
+def _summary(snap: PortfolioSnapshot, change: PortfolioChange | None,
+             change_label: str) -> list[str]:
     cash_pct = snap.account.cash / snap.total_equity if snap.total_equity else 0.0
     lines = [f"- **Equity:** {_money(snap.total_equity)} "
              f"(cash {_money(snap.account.cash)}, {cash_pct:.0%})"]
@@ -36,7 +37,7 @@ def _summary(snap: PortfolioSnapshot, change: PortfolioChange | None) -> list[st
     if day is not None:
         lines.append(f"- **Today:** {_pct(day)} on stock holdings")
     if change:
-        line = (f"- **Since last snapshot:** {_money(change.market_gain, signed=True)} "
+        line = (f"- **{change_label}:** {_money(change.market_gain, signed=True)} "
                 f"({_pct(change.market_gain_pct)}) from the market")
         if abs(change.net_deposits) >= 1:
             line += f", {_money(change.net_deposits, signed=True)} net deposits"
@@ -62,13 +63,13 @@ def _movers(snap: PortfolioSnapshot, change: PortfolioChange | None, n: int) -> 
     return ["## Biggest movers", "", *_table(headers, rows, right={1, 2, 3})]
 
 
-def _trades(change: PortfolioChange | None) -> list[str]:
+def _trades(change: PortfolioChange | None, since: str) -> list[str]:
     if not change:
         return []
     traded = change.by_status(*TRADE_VERBS)
     if not traded:
         return []
-    lines = ["## Position changes", ""]
+    lines = [f"## Position changes {since}", ""]
     for p in traded:
         delta = p.shares_after - p.shares_before
         lines.append(f"- {TRADE_VERBS[p.status]} **{p.ticker}**: {delta:+g} shares "
@@ -76,12 +77,12 @@ def _trades(change: PortfolioChange | None) -> list[str]:
     return lines
 
 
-def _news(sentiment: list[TickerSentiment]) -> list[str]:
+def _news(sentiment: list[TickerSentiment], window: str) -> list[str]:
     scored = [s for s in sentiment if s.score is not None]
     if not scored:
         return []
     scored.sort(key=lambda s: -abs(s.score))
-    lines = ["## News sentiment", "",
+    lines = [f"## News sentiment, {window}", "",
              *_table(["Ticker", "Read", "Score", "Articles"],
                      [[s.ticker, s.label, f"{s.score:+.2f}", str(s.articles)] for s in scored],
                      right={2, 3})]
@@ -106,15 +107,18 @@ def _catalysts(events: list[Catalyst], today: date) -> list[str]:
 def render(snap: PortfolioSnapshot, today: date, change: PortfolioChange | None = None,
            sentiment: list[TickerSentiment] | None = None,
            events: list[Catalyst] | None = None, flags: list[str] | None = None,
-           movers: int = 5) -> str:
-    """The daily report as Markdown. Sections with nothing to say are left out."""
+           movers: int = 5, title: str | None = None,
+           change_label: str = "Since last snapshot", since: str = "since last snapshot",
+           news_window: str = "last 36 hours") -> str:
+    """The report as Markdown. Sections with nothing to say are left out. The weekly
+    report reuses this with its own title and labels."""
     sections = [
-        [f"# Daily report: {today:%a %b %d, %Y}", "",
+        [title or f"# Daily report: {today:%a %b %d, %Y}", "",
          f"_Snapshot {snap.taken_at:%Y-%m-%d %H:%M} ({snap.source})_", "",
-         *_summary(snap, change)],
+         *_summary(snap, change, change_label)],
         _movers(snap, change, movers),
-        _trades(change),
-        _news(sentiment or []),
+        _trades(change, since),
+        _news(sentiment or [], news_window),
         _catalysts(events or [], today),
         ["## Risk flags", "", *(f"- {f}" for f in flags)] if flags else [],
     ]
