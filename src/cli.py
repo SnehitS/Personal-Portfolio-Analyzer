@@ -7,6 +7,7 @@
     python -m src.cli news                        # fetch and show news for your holdings
     python -m src.cli options                     # implied moves and IV for your holdings
     python -m src.cli catalysts                   # upcoming events for your holdings
+    python -m src.cli report daily                # write today's report to reports/daily/
 """
 
 from __future__ import annotations
@@ -494,6 +495,57 @@ def cmd_catalysts(args, cfg: dict) -> None:
     console.print(table)
 
 
+def cmd_report(args, cfg: dict) -> None:
+    from rich.markdown import Markdown
+
+    from src.data_pipeline import earnings_calendar
+    from src.portfolio_analysis import catalysts
+    from src.sentiment_pipeline import aggregate
+    from src.update_engine import daily, report
+    from src.update_engine.changes import compare
+
+    db = Path(cfg["database"])
+    snap = storage.load_latest_snapshot(db)
+    if snap is None:
+        console.print("No snapshots yet. Run `python -m src.cli snapshot` first.")
+        return
+    rep_cfg = cfg.get("reports", {})
+    today = date.today()
+
+    # Compare with the last run from an earlier day, so two runs today don't hide the move
+    start_of_day = datetime.combine(snap.taken_at.date(), datetime.min.time())
+    prev = storage.load_snapshot_before(start_of_day, snap.source, db)
+    change = compare(prev, snap) if prev else None
+
+    tickers = [h.ticker for h in sorted(snap.holdings, key=lambda h: -h.market_value)]
+    since = datetime.now(timezone.utc) - timedelta(hours=rep_cfg.get("news_hours", 36))
+    stored = storage.load_news(tickers, since, db)
+    reads = aggregate.best_reads(stored, storage.load_sentiment(tickers, db_path=db))
+    half_life = cfg.get("sentiment", {}).get("half_life_hours", 48)
+    sentiment = [aggregate.summarize(reads, t, half_life) for t in tickers]
+
+    horizon = rep_cfg.get("catalyst_days", 7)
+    stocks = [h.ticker for h in snap.holdings if h.sector != "ETF"]
+    with console.status("Checking earnings calendar..."):
+        detail = earnings_calendar.fetch(stocks, today, today + timedelta(days=horizon))
+    events = catalysts.build(snap, today, horizon,
+                             cfg.get("catalysts", {}).get("macro_events"), detail)
+
+    markdown = daily.render(snap, today, change, sentiment, events,
+                            metrics.risk_flags(snap, cfg["risk"], today),
+                            movers=rep_cfg.get("movers", 5))
+    path = report.write_report("daily", markdown, today)
+    if args.print:
+        console.print(Markdown(markdown))
+    if not stored:
+        console.print("[dim]No stored news in the window. Run `python -m src.cli news` "
+                      "first to include sentiment.[/dim]")
+    if prev is None:
+        console.print("[dim]No snapshot from an earlier day yet, so moves are vs. the "
+                      "previous close and trades aren't shown.[/dim]")
+    console.print(f"Saved {path}")
+
+
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="portfolio")
@@ -531,6 +583,11 @@ def main() -> None:
     cats.add_argument("--moves", action="store_true",
                       help="add the options-implied earnings move (slower: fetches chains)")
     cats.set_defaults(func=cmd_catalysts)
+
+    rep = sub.add_parser("report", help="write a report to reports/ (stored data, no news fetch)")
+    rep.add_argument("kind", choices=["daily"])
+    rep.add_argument("--print", action="store_true", help="also show it in the terminal")
+    rep.set_defaults(func=cmd_report)
 
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())
