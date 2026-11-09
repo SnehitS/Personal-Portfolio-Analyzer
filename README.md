@@ -95,5 +95,23 @@ With no tickers, each command uses the latest snapshot's holdings (and option un
 
 News, scores and IV history live in the same SQLite file as the snapshots.
 
+## Stage 3: Reports (in progress)
+
+```bash
+python -m src.cli snapshot          # today's holdings
+python -m src.cli news              # fetch and score today's headlines
+python -m src.cli report daily      # write reports/daily/YYYY-MM-DD.md
+python -m src.cli report daily --print   # ...and show it in the terminal
+```
+
+The daily report only reads what's already stored, so it's fast and makes no news requests. The one exception is the Finnhub earnings calendar, used when a key is set. It covers:
+- **Summary:** equity and cash, today's move, and the gain since the last snapshot from an earlier day, with deposits and withdrawals taken out.
+- **Biggest movers:** the positions with the largest dollar impact. On the first snapshot this falls back to the move from the previous close.
+- **Position changes:** positions opened, added to, trimmed or closed since the last snapshot.
+- **News sentiment:** each holding's read from the last 36 hours, with the headline behind each bullish or bearish call.
+- **Coming up:** catalysts in the next 7 days, plus the risk flags from Stage 1.
+
+Window sizes are under `reports` in `configs/settings.yaml`. Reports are gitignored.
+
 ## Roadmap
-- **Stage 3:** daily/weekly reports with position moves, buy/sell/trim ideas, cash deployment, new long/short and options ideas, and later prediction markets.
+- **Stage 3 (next):** weekly report, alerts, buy/sell/trim ideas, cash deployment, new long/short and options ideas, and later prediction markets.
