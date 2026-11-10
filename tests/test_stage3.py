@@ -140,3 +140,43 @@ def test_weekly_report_labels_and_week_start():
     assert md.startswith("# Weekly report: week of Nov 09, 2026")
     assert "- **This week:** +$0 (+0.00%) from the market" in md
     assert "## Position changes this week" in md
+
+
+def test_alerts():
+    from datetime import datetime, timezone
+
+    from src.data_pipeline.models import AccountSummary, Holding, NewsItem, PortfolioSnapshot
+    from src.portfolio_analysis.catalysts import Catalyst
+    from src.sentiment_pipeline.aggregate import ArticleRead, TickerSentiment
+    from src.update_engine import alerts
+
+    now = datetime(2026, 11, 10, 15, tzinfo=timezone.utc)
+    snap = PortfolioSnapshot("robinhood", datetime(2026, 11, 10, 10), AccountSummary(0.0), [
+        Holding("BIG", 10, 100.0, 94.0, previous_close=100.0,
+                week52_high=150.0, week52_low=93.0),                 # -6%, near low
+        Holding("TINY", 1, 50.0, 30.0, previous_close=28.0),          # +7%, -40% vs cost
+        Holding("CALM", 100, 10.0, 10.0, previous_close=10.0)])
+    bad = NewsItem("BIG", "yahoo", now, "BIG recalls product", "u1")
+    sent = [TickerSentiment("BIG", -0.6, 4, 0, 3, most_negative=ArticleRead(bad, -0.9, "negative", "finbert")),
+            TickerSentiment("CALM", -0.9, 1, 0, 1)]                     # too few articles
+    events = [Catalyst(date(2026, 11, 11), "BIG", "earnings", "after close"),
+              Catalyst(date(2026, 11, 20), "CALM", "earnings"),       # too far out
+              Catalyst(date(2026, 11, 11), "CALM", "option expiry", "short 1x 10C")]
+    filings = [NewsItem("BIG", "sec", now, "8-K: Departure of an officer", "f1", kind="filing", form="8-K"),
+               NewsItem("BIG", "sec", now, "Form 4", "f2", kind="filing", form="4")]
+
+    found = alerts.check(snap, {}, date(2026, 11, 10), sent, events, filings, now)
+    msgs = [a.message for a in found]
+    assert "BIG down 6.0% today (48% of the portfolio)" in msgs
+    assert "BIG is at its 52-week low" in msgs
+    assert "TINY is 40% below your average cost" in msgs
+    assert "BIG reports earnings tomorrow (after close)" in msgs
+    assert "CALM short 1x 10C expires Wed Nov 11" in msgs
+    assert any(m.startswith("BIG news is bearish (-0.60 over 4 articles): BIG recalls") for m in msgs)
+    assert "BIG: 8-K: Departure of an officer" in msgs
+    assert not any("CALM news" in m or "Form 4" in m or "CALM reports" in m for m in msgs)
+    assert found[0].level == "high" and found[-1].level == "watch"
+
+    md = alerts.render(found, date(2026, 11, 10))
+    assert md.index("## Act on") < md.index("## Watch")
+    assert "Nothing needs attention" in alerts.render([], date(2026, 11, 10))
