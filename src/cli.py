@@ -8,6 +8,7 @@
     python -m src.cli options                     # implied moves and IV for your holdings
     python -m src.cli catalysts                   # upcoming events for your holdings
     python -m src.cli report daily                # write today's report to reports/daily/
+    python -m src.cli report weekly               # this week so far, to reports/weekly/
 """
 
 from __future__ import annotations
@@ -501,7 +502,7 @@ def cmd_report(args, cfg: dict) -> None:
     from src.data_pipeline import earnings_calendar
     from src.portfolio_analysis import catalysts
     from src.sentiment_pipeline import aggregate
-    from src.update_engine import daily, report
+    from src.update_engine import daily, report, weekly
     from src.update_engine.changes import compare
 
     db = Path(cfg["database"])
@@ -509,16 +510,21 @@ def cmd_report(args, cfg: dict) -> None:
     if snap is None:
         console.print("No snapshots yet. Run `python -m src.cli snapshot` first.")
         return
+    is_weekly = args.kind == "weekly"
     rep_cfg = cfg.get("reports", {})
+    rep_cfg = {**rep_cfg, **rep_cfg.get("weekly", {})} if is_weekly else rep_cfg
     today = date.today()
 
-    # Compare with the last run from an earlier day, so two runs today don't hide the move
-    start_of_day = datetime.combine(snap.taken_at.date(), datetime.min.time())
-    prev = storage.load_snapshot_before(start_of_day, snap.source, db)
+    # Daily: the last run from an earlier day, so two runs today don't hide the move.
+    # Weekly: the last run before this Monday, i.e. the end of last week.
+    cutoff = (weekly.week_start(snap.taken_at.date()) if is_weekly
+              else datetime.combine(snap.taken_at.date(), datetime.min.time()))
+    prev = storage.load_snapshot_before(cutoff, snap.source, db)
     change = compare(prev, snap) if prev else None
 
     tickers = [h.ticker for h in sorted(snap.holdings, key=lambda h: -h.market_value)]
-    since = datetime.now(timezone.utc) - timedelta(hours=rep_cfg.get("news_hours", 36))
+    news_hours = rep_cfg.get("news_hours", 36)
+    since = datetime.now(timezone.utc) - timedelta(hours=news_hours)
     stored = storage.load_news(tickers, since, db)
     reads = aggregate.best_reads(stored, storage.load_sentiment(tickers, db_path=db))
     half_life = cfg.get("sentiment", {}).get("half_life_hours", 48)
@@ -531,17 +537,24 @@ def cmd_report(args, cfg: dict) -> None:
     events = catalysts.build(snap, today, horizon,
                              cfg.get("catalysts", {}).get("macro_events"), detail)
 
-    markdown = daily.render(snap, today, change, sentiment, events,
-                            metrics.risk_flags(snap, cfg["risk"], today),
-                            movers=rep_cfg.get("movers", 5))
-    path = report.write_report("daily", markdown, today)
+    flags = metrics.risk_flags(snap, cfg["risk"], today)
+    if is_weekly:
+        markdown = weekly.render(snap, today, change, sentiment, events, flags,
+                                 movers=rep_cfg.get("movers", 10),
+                                 news_days=round(news_hours / 24))
+    else:
+        markdown = daily.render(snap, today, change, sentiment, events, flags,
+                                movers=rep_cfg.get("movers", 5),
+                                news_window=f"last {news_hours} hours")
+    path = report.write_report(args.kind, markdown, today)
     if args.print:
         console.print(Markdown(markdown))
     if not stored:
         console.print("[dim]No stored news in the window. Run `python -m src.cli news` "
                       "first to include sentiment.[/dim]")
     if prev is None:
-        console.print("[dim]No snapshot from an earlier day yet, so moves are vs. the "
+        earlier = "last week" if is_weekly else "an earlier day"
+        console.print(f"[dim]No snapshot from {earlier} yet, so moves are vs. the "
                       "previous close and trades aren't shown.[/dim]")
     console.print(f"Saved {path}")
 
@@ -585,7 +598,7 @@ def main() -> None:
     cats.set_defaults(func=cmd_catalysts)
 
     rep = sub.add_parser("report", help="write a report to reports/ (stored data, no news fetch)")
-    rep.add_argument("kind", choices=["daily"])
+    rep.add_argument("kind", choices=["daily", "weekly"])
     rep.add_argument("--print", action="store_true", help="also show it in the terminal")
     rep.set_defaults(func=cmd_report)
 

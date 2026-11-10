@@ -102,6 +102,7 @@ python -m src.cli snapshot          # today's holdings
 python -m src.cli news              # fetch and score today's headlines
 python -m src.cli report daily      # write reports/daily/YYYY-MM-DD.md
 python -m src.cli report daily --print   # ...and show it in the terminal
+python -m src.cli report weekly     # write reports/weekly/YYYY-Www.md
 ```
 
 The daily report only reads what's already stored, so it's fast and makes no news requests. The one exception is the Finnhub earnings calendar, used when a key is set. It covers:
@@ -111,7 +112,9 @@ The daily report only reads what's already stored, so it's fast and makes no new
 - **News sentiment:** each holding's read from the last 36 hours, with the headline behind each bullish or bearish call.
 - **Coming up:** catalysts in the next 7 days, plus the risk flags from Stage 1.
 
-Window sizes are under `reports` in `configs/settings.yaml`. Reports are gitignored.
+The weekly report has the same sections, measured against the last snapshot before this Monday (the end of last week). It shows the top 10 movers, a week of news and the next 14 days of catalysts.
+
+Window sizes are under `reports` in `configs/settings.yaml`, with weekly overrides under `reports.weekly`. Reports are gitignored.
 
 ## Roadmap
-- **Stage 3 (next):** weekly report, alerts, buy/sell/trim ideas, cash deployment, new long/short and options ideas, and later prediction markets.
+- **Stage 3 (next):** alerts, buy/sell/trim ideas, cash deployment, new long/short and options ideas, and later prediction markets.

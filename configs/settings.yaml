@@ -36,3 +36,7 @@ reports:
   movers: 5                     # rows in the daily "biggest movers" table
   news_hours: 36                # stored news this recent feeds the daily sentiment section
   catalyst_days: 7              # how far ahead the daily "coming up" section looks
+  weekly:                       # overrides for `report weekly`
+    movers: 10
+    news_hours: 168             # the whole week
+    catalyst_days: 14
