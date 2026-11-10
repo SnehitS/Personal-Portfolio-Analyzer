@@ -40,3 +40,14 @@ reports:
     movers: 10
     news_hours: 168             # the whole week
     catalyst_days: 14
+
+alerts:                         # `report alerts`; "high" alerts are in positions >= high_weight
+  big_move_pct: 0.05            # holding moved 5%+ since the previous close
+  near_extreme: 0.02            # within 2% of its 52-week high or low
+  loss_from_cost: -0.20         # position 20%+ below average cost
+  earnings_days: 2
+  expiry_days: 2                # held option expires within 2 days
+  bearish_score: -0.40          # ticker news sentiment at or below this...
+  min_articles: 3               # ...across at least this many articles
+  filing_hours: 24              # 8-Ks filed in the last day
+  high_weight: 0.05

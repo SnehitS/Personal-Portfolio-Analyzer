@@ -9,6 +9,7 @@
     python -m src.cli catalysts                   # upcoming events for your holdings
     python -m src.cli report daily                # write today's report to reports/daily/
     python -m src.cli report weekly               # this week so far, to reports/weekly/
+    python -m src.cli report alerts               # what needs attention today
 """
 
 from __future__ import annotations
@@ -502,7 +503,7 @@ def cmd_report(args, cfg: dict) -> None:
     from src.data_pipeline import earnings_calendar
     from src.portfolio_analysis import catalysts
     from src.sentiment_pipeline import aggregate
-    from src.update_engine import daily, report, weekly
+    from src.update_engine import alerts, daily, report, weekly
     from src.update_engine.changes import compare
 
     db = Path(cfg["database"])
@@ -536,6 +537,15 @@ def cmd_report(args, cfg: dict) -> None:
         detail = earnings_calendar.fetch(stocks, today, today + timedelta(days=horizon))
     events = catalysts.build(snap, today, horizon,
                              cfg.get("catalysts", {}).get("macro_events"), detail)
+
+    if args.kind == "alerts":
+        found = alerts.check(snap, cfg.get("alerts"), today, sentiment, events, stored)
+        path = report.write_report("alerts", alerts.render(found, today), today)
+        for a in found:
+            color = "red" if a.level == "high" else "yellow"
+            console.print(f"[{color}]{a.level:>5}[/{color}]  {a.message}")
+        console.print(f"{len(found) or 'No'} alerts. Saved {path}")
+        return
 
     flags = metrics.risk_flags(snap, cfg["risk"], today)
     if is_weekly:
@@ -598,7 +608,7 @@ def main() -> None:
     cats.set_defaults(func=cmd_catalysts)
 
     rep = sub.add_parser("report", help="write a report to reports/ (stored data, no news fetch)")
-    rep.add_argument("kind", choices=["daily", "weekly"])
+    rep.add_argument("kind", choices=["daily", "weekly", "alerts"])
     rep.add_argument("--print", action="store_true", help="also show it in the terminal")
     rep.set_defaults(func=cmd_report)
 
