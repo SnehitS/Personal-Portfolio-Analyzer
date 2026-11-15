@@ -180,3 +180,52 @@ def test_alerts():
     md = alerts.render(found, date(2026, 11, 10))
     assert md.index("## Act on") < md.index("## Watch")
     assert "Nothing needs attention" in alerts.render([], date(2026, 11, 10))
+
+
+def _alert_snap():
+    from datetime import datetime
+
+    from src.data_pipeline.models import AccountSummary, Holding, PortfolioSnapshot
+
+    return PortfolioSnapshot("robinhood", datetime(2026, 11, 10, 10), AccountSummary(0.0), [
+        Holding("BIG", 10, 100.0, 105.0, previous_close=100.0),       # exactly +5%, 49% weight
+        Holding("SMALL", 1, 100.0, 80.0, previous_close=84.0),        # -4.8%, exactly -20% vs cost
+        Holding("REST", 100, 10.0, 10.0, previous_close=10.0)])
+
+
+def test_alerts_thresholds_are_inclusive():
+    from src.update_engine import alerts
+
+    found = alerts.check(_alert_snap(), {}, date(2026, 11, 10))
+    msgs = [a.message for a in found]
+    assert "BIG up 5.0% today (49% of the portfolio)" in msgs
+    assert "SMALL is 20% below your average cost" in msgs
+    assert not any(m.startswith("SMALL up") or m.startswith("SMALL down") for m in msgs)
+
+
+def test_alerts_level_follows_position_weight():
+    from src.update_engine import alerts
+
+    found = alerts.check(_alert_snap(), {"big_move_pct": 0.04}, date(2026, 11, 10))
+    by_ticker = {(a.ticker, a.kind): a.level for a in found}
+    assert by_ticker[("BIG", "move")] == "high"
+    assert by_ticker[("SMALL", "move")] == "watch"
+    assert by_ticker[("SMALL", "loss")] == "watch"
+
+
+def test_alerts_skip_past_events_and_stale_filings():
+    from datetime import datetime, timedelta, timezone
+
+    from src.data_pipeline.models import NewsItem
+    from src.portfolio_analysis.catalysts import Catalyst
+    from src.update_engine import alerts
+
+    now = datetime(2026, 11, 10, 15, tzinfo=timezone.utc)
+    events = [Catalyst(date(2026, 11, 9), "BIG", "earnings"),
+              Catalyst(date(2026, 11, 9), "REST", "option expiry", "long 1x 10C")]
+    filings = [NewsItem("BIG", "sec", now - timedelta(hours=30), "8-K: Old news", "f1",
+                        kind="filing", form="8-K")]
+    found = alerts.check(_alert_snap(), {"big_move_pct": 1.0, "loss_from_cost": -1.0},
+                         date(2026, 11, 10), [], events, filings, now)
+    assert found == []
+    assert "Nothing needs attention" in alerts.render(found, date(2026, 11, 10))
