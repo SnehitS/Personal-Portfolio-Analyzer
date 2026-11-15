@@ -24,12 +24,14 @@ Personal-Portfolio-Analyzer/
 ├── reports/
 │   ├── daily/                   # Daily portfolio/news updates
 │   ├── weekly/                  # Weekly summary updates
-│   └── alerts/                  # Risk/event-based update outputs
+│   ├── alerts/                  # Risk/event-based update outputs
+│   └── logs/                    # run.log from the scheduled job
+├── scripts/                     # schedule.ps1: Windows Task Scheduler setup for `run`
 ├── src/
 │   ├── data_pipeline/           # Robinhood/CSV ingestion, market data, news providers, storage
 │   ├── sentiment_pipeline/      # FinBERT and Claude scoring, per-ticker aggregation
 │   ├── portfolio_analysis/      # Metrics, technicals, options and catalyst calendar
-│   └── update_engine/           # Daily/weekly reports and alerts (Stage 3)
+│   └── update_engine/           # Daily/weekly reports, alerts and notifications (Stage 3)
 └── tests/                       # Offline unit tests for Stages 1-3
 ```
 
@@ -127,6 +129,33 @@ The weekly report has the same sections, measured against the last snapshot befo
 Alerts in positions of 5%+ are marked "high". Thresholds are under `alerts` in settings.
 
 Window sizes are under `reports` in `configs/settings.yaml`, with weekly overrides under `reports.weekly`. Reports are gitignored.
+
+### Running it on a schedule
+
+`run` does the whole day in one go: snapshot, news, the daily report, the weekly report on Fridays, and alerts. Then it sends a notification. If a step fails, the error is logged and the remaining steps carry on with stored data. The failure is included in the notification, and the command exits with code 1. It does nothing on weekends unless you pass `--force`.
+
+```bash
+python -m src.cli run                    # what the scheduled job runs
+python -m src.cli run --force --no-snapshot --no-news --no-notify   # try it on stored data
+python -m src.cli notify --test          # send a sample alert to your channels
+python -m src.cli notify                 # send today's alerts from the latest snapshot
+```
+
+To run it every weekday after the close, register a Windows scheduled task:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Time 16:30   # local time
+powershell -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Remove
+```
+
+The task only runs while you're logged in. If the PC was asleep at the scheduled time, it runs on wake. Output is appended to `reports/logs/run.log`. An unattended Robinhood login needs `ROBINHOOD_TOTP_SECRET` in `.env`. Without it, the job reuses the saved session until that expires, and after that the snapshot step fails and you're notified.
+
+**Notifications** go to the channels listed under `notify.channels` in settings:
+- `desktop`: a Windows toast. No setup needed; this is the default.
+- `ntfy`: push to your phone through [ntfy](https://ntfy.sh). Set `NTFY_TOPIC` to a long random name and subscribe to it in the ntfy app. Anyone who knows the topic name can read it, so make it hard to guess.
+- `email`: over SMTP. For Gmail, set `SMTP_USERNAME` and an [app password](https://myaccount.google.com/apppasswords) as `SMTP_PASSWORD`.
+
+Nothing is sent on a quiet day unless `notify.always` is true. Set `notify.min_level: high` to only hear about alerts in large positions.
 
 ## Roadmap
 - **Stage 4 (next):** buy/sell/trim ideas, cash deployment, new long/short and options ideas, and later prediction markets.
