@@ -229,3 +229,81 @@ def test_alerts_skip_past_events_and_stale_filings():
                          date(2026, 11, 10), [], events, filings, now)
     assert found == []
     assert "Nothing needs attention" in alerts.render(found, date(2026, 11, 10))
+
+
+def test_notify_compose():
+    from src.update_engine.alerts import Alert
+    from src.update_engine import notify
+
+    found = [Alert("high", "BIG", "move", "BIG down 6.0% today"),
+             Alert("watch", "TINY", "loss", "TINY is 40% below your average cost")]
+    msg = notify.compose(found, [], {}, "Equity $10,000.00, today -$300 (-2.91%)")
+    assert msg.title == "Portfolio: 1 high, 1 watch alerts"
+    assert msg.body.splitlines() == ["Equity $10,000.00, today -$300 (-2.91%)",
+                                     "! BIG down 6.0% today", "- TINY is 40% below your average cost"]
+    assert msg.urgent
+
+    only_high = notify.compose(found, [], {"min_level": "high"})
+    assert only_high.title == "Portfolio: 1 high alert" and "TINY" not in only_high.body
+
+    assert notify.compose([], [], {}) is None
+    assert notify.compose([], [], {"always": True}).title == "Portfolio: all clear"
+    broke = notify.compose([], ["snapshot failed: login"], {})
+    assert broke.title == "Portfolio: run had problems" and "x snapshot failed: login" in broke.body
+    assert not broke.urgent
+
+
+def test_notify_send_reports_each_channel(monkeypatch):
+    from src.update_engine import notify
+
+    sent = []
+    monkeypatch.setitem(notify.CHANNELS, "desktop", lambda m, c: sent.append(m.title))
+    monkeypatch.delenv("NTFY_TOPIC", raising=False)
+    msg = notify.Message("t", "b")
+    results = notify.send(msg, {"channels": ["desktop", "ntfy", "pager"]})
+    assert sent == ["t"]
+    assert results["desktop"] == "sent"
+    assert results["ntfy"].startswith("failed: set NTFY_TOPIC")
+    assert results["pager"].startswith("unknown channel")
+
+
+def test_run_keeps_going_after_a_failed_step(monkeypatch, tmp_path):
+    from argparse import Namespace
+
+    from src import cli
+    from src.update_engine import notify
+
+    calls, sent = [], []
+
+    def boom(args, cfg):
+        calls.append("snapshot")
+        raise EOFError("no MFA code")
+
+    def report(args, cfg):
+        calls.append(args.kind)
+        return [] if args.kind == "alerts" else None
+
+    monkeypatch.setattr(cli, "cmd_snapshot", boom)
+    monkeypatch.setattr(cli, "cmd_news", lambda a, c: calls.append("news"))
+    monkeypatch.setattr(cli, "cmd_report", report)
+    monkeypatch.setattr(cli.storage, "load_latest_snapshot", lambda db: None)
+    monkeypatch.setattr(notify, "send", lambda m, c: sent.append(m) or {"desktop": "sent"})
+    monkeypatch.setattr(cli, "date", type("D", (), {"today": staticmethod(lambda: date(2026, 11, 13))}))
+
+    args = Namespace(force=False, weekly=False, no_snapshot=False, no_news=False, no_notify=False)
+    with pytest.raises(SystemExit):
+        cli.cmd_run(args, {"database": str(tmp_path / "x.db")})
+    assert calls == ["snapshot", "news", "daily", "weekly", "alerts"]   # Nov 13 2026 is a Friday
+    assert sent and sent[0].title == "Portfolio: run had problems"
+    assert "snapshot failed: no MFA code" in sent[0].body
+
+
+def test_run_skips_weekends(monkeypatch):
+    from argparse import Namespace
+
+    from src import cli
+
+    monkeypatch.setattr(cli, "date", type("D", (), {"today": staticmethod(lambda: date(2026, 11, 14))}))
+    monkeypatch.setattr(cli, "cmd_snapshot", lambda a, c: pytest.fail("ran on a Saturday"))
+    cli.cmd_run(Namespace(force=False, weekly=False, no_snapshot=False, no_news=False,
+                          no_notify=False), {})
