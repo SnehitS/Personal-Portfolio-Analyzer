@@ -30,7 +30,7 @@ Personal-Portfolio-Analyzer/
 │   ├── sentiment_pipeline/      # FinBERT and Claude scoring, per-ticker aggregation
 │   ├── portfolio_analysis/      # Metrics, technicals, options and catalyst calendar
 │   └── update_engine/           # Daily/weekly reports and alerts (Stage 3)
-└── tests/                       # Offline unit tests for Stages 1 and 2
+└── tests/                       # Offline unit tests for Stages 1-3
 ```
 
 ## Stage 1: Portfolio data (done)
@@ -95,7 +95,7 @@ With no tickers, each command uses the latest snapshot's holdings (and option un
 
 News, scores and IV history live in the same SQLite file as the snapshots.
 
-## Stage 3: Reports (in progress)
+## Stage 3: Reports (done)
 
 ```bash
 python -m src.cli snapshot          # today's holdings
@@ -129,4 +129,4 @@ Alerts in positions of 5%+ are marked "high". Thresholds are under `alerts` in s
 Window sizes are under `reports` in `configs/settings.yaml`, with weekly overrides under `reports.weekly`. Reports are gitignored.
 
 ## Roadmap
-- **Stage 3 (next):** buy/sell/trim ideas, cash deployment, new long/short and options ideas, and later prediction markets.
+- **Stage 4 (next):** buy/sell/trim ideas, cash deployment, new long/short and options ideas, and later prediction markets.
