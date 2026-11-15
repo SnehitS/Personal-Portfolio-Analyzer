@@ -10,6 +10,8 @@
     python -m src.cli report daily                # write today's report to reports/daily/
     python -m src.cli report weekly               # this week so far, to reports/weekly/
     python -m src.cli report alerts               # what needs attention today
+    python -m src.cli run                         # all of the above, then notify (for the scheduler)
+    python -m src.cli notify --test               # check your notification channels
 """
 
 from __future__ import annotations
@@ -497,7 +499,7 @@ def cmd_catalysts(args, cfg: dict) -> None:
     console.print(table)
 
 
-def cmd_report(args, cfg: dict) -> None:
+def cmd_report(args, cfg: dict) -> list | None:
     from rich.markdown import Markdown
 
     from src.data_pipeline import earnings_calendar
@@ -510,7 +512,7 @@ def cmd_report(args, cfg: dict) -> None:
     snap = storage.load_latest_snapshot(db)
     if snap is None:
         console.print("No snapshots yet. Run `python -m src.cli snapshot` first.")
-        return
+        return None
     is_weekly = args.kind == "weekly"
     rep_cfg = cfg.get("reports", {})
     rep_cfg = {**rep_cfg, **rep_cfg.get("weekly", {})} if is_weekly else rep_cfg
@@ -545,7 +547,7 @@ def cmd_report(args, cfg: dict) -> None:
             color = "red" if a.level == "high" else "yellow"
             console.print(f"[{color}]{a.level:>5}[/{color}]  {a.message}")
         console.print(f"{len(found) or 'No'} alerts. Saved {path}")
-        return
+        return found
 
     flags = metrics.risk_flags(snap, cfg["risk"], today)
     if is_weekly:
@@ -567,6 +569,93 @@ def cmd_report(args, cfg: dict) -> None:
         console.print(f"[dim]No snapshot from {earlier} yet, so moves are vs. the "
                       "previous close and trades aren't shown.[/dim]")
     console.print(f"Saved {path}")
+    return None
+
+
+def _day_summary(snap: PortfolioSnapshot) -> str:
+    moved = [(h.price - h.previous_close) * h.quantity for h in snap.holdings if h.previous_close]
+    line = f"Equity {_money(snap.total_equity)}"
+    if moved:
+        today = sum(moved)
+        base = snap.total_equity - today
+        pct = f" ({today / base:+.2%})" if base else ""
+        line += f", today {'+' if today >= 0 else '-'}${abs(today):,.0f}{pct}"
+    return line
+
+
+def cmd_run(args, cfg: dict) -> None:
+    """Snapshot, news, reports and alerts in one go, then notify. Built to run unattended:
+    a step that fails is logged and reported, and the rest carry on with stored data."""
+    import traceback
+    from argparse import Namespace
+
+    from src.update_engine import notify
+
+    run_cfg = cfg.get("run", {})
+    today = date.today()
+    if today.weekday() >= 5 and not args.force:
+        console.print(f"{today:%A}: markets are closed, nothing to do (use --force to run anyway).")
+        return
+    console.print(f"[bold]Run started {datetime.now():%Y-%m-%d %H:%M}[/bold]")
+
+    failures: list[str] = []
+    found: list = []
+
+    def step(name: str, fn, ns: Namespace):
+        console.rule(name)
+        try:
+            return fn(ns, cfg)
+        except BaseException as e:  # noqa: BLE001 - includes SystemExit/EOFError from login prompts
+            if isinstance(e, KeyboardInterrupt):
+                raise
+            console.print(f"[red]{name} failed:[/red] {e!r}")
+            console.print(traceback.format_exc(), markup=False, highlight=False)
+            failures.append(f"{name} failed: {e or type(e).__name__}")
+            return None
+
+    if not args.no_snapshot:
+        step("snapshot", cmd_snapshot, Namespace(csv=None, no_save=False))
+    if not args.no_news:
+        step("news", cmd_news, Namespace(tickers=[], days=None, limit=3, no_fetch=False,
+                                         no_score=False, why=False))
+    step("daily report", cmd_report, Namespace(kind="daily", print=False))
+    weekly_day = run_cfg.get("weekly_on", "friday").lower()
+    if f"{today:%A}".lower() == weekly_day or args.weekly:
+        step("weekly report", cmd_report, Namespace(kind="weekly", print=False))
+    found = step("alerts", cmd_report, Namespace(kind="alerts", print=False)) or []
+
+    snap = storage.load_latest_snapshot(Path(cfg["database"]))
+    summary = _day_summary(snap) if snap and snap.taken_at.date() == today else ""
+    msg = notify.compose(found, failures, cfg.get("notify"), summary)
+    console.rule("notify")
+    if msg is None or args.no_notify:
+        console.print("Nothing to send." if msg is None else "Skipped (--no-notify).")
+    else:
+        for channel, result in notify.send(msg, cfg.get("notify")).items():
+            console.print(f"{channel}: {result}")
+    console.print(f"[bold]Run finished {datetime.now():%H:%M}[/bold], "
+                  f"{len(failures)} step(s) failed.")
+    if failures:
+        raise SystemExit(1)
+
+
+def cmd_notify(args, cfg: dict) -> None:
+    from src.update_engine import alerts, notify
+
+    if args.test:
+        fake = [alerts.Alert("high", "TEST", "move", "TEST up 6.0% today (this is a test)")]
+        msg = notify.compose(fake, [], cfg.get("notify"), "Test notification from the analyzer")
+    else:
+        snap = storage.load_latest_snapshot(Path(cfg["database"]))
+        if snap is None:
+            console.print("No snapshots yet. Run `python -m src.cli snapshot` first.")
+            return
+        found = alerts.check(snap, cfg.get("alerts"))
+        msg = notify.compose(found, [], {**cfg.get("notify", {}), "always": True},
+                             _day_summary(snap))
+    console.print(f"[bold]{msg.title}[/bold]\n{msg.body}\n")
+    for channel, result in notify.send(msg, cfg.get("notify")).items():
+        console.print(f"{channel}: {result}")
 
 
 def main() -> None:
@@ -611,6 +700,18 @@ def main() -> None:
     rep.add_argument("kind", choices=["daily", "weekly", "alerts"])
     rep.add_argument("--print", action="store_true", help="also show it in the terminal")
     rep.set_defaults(func=cmd_report)
+
+    run = sub.add_parser("run", help="snapshot, news, reports and alerts, then notify")
+    run.add_argument("--force", action="store_true", help="run on weekends too")
+    run.add_argument("--weekly", action="store_true", help="write the weekly report today")
+    run.add_argument("--no-snapshot", action="store_true", help="skip the Robinhood pull")
+    run.add_argument("--no-news", action="store_true", help="skip fetching news")
+    run.add_argument("--no-notify", action="store_true", help="don't send notifications")
+    run.set_defaults(func=cmd_run)
+
+    note = sub.add_parser("notify", help="send the latest alerts to your notification channels")
+    note.add_argument("--test", action="store_true", help="send a sample alert instead")
+    note.set_defaults(func=cmd_notify)
 
     args = parser.parse_args()
     cfg = yaml.safe_load(Path(args.config).read_text())

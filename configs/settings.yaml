@@ -51,3 +51,14 @@ alerts:                         # `report alerts`; "high" alerts are in position
   min_articles: 3               # ...across at least this many articles
   filing_hours: 24              # 8-Ks filed in the last day
   high_weight: 0.05
+
+run:                            # `run`: what the scheduled job does
+  weekly_on: friday             # also write the weekly report on this day
+
+notify:                         # where `run` sends alerts; secrets go in .env
+  channels: [desktop]           # any of: desktop (Windows toast), ntfy (phone push), email
+  min_level: watch              # "high" to only hear about alerts in big positions
+  always: false                 # true sends a one-line "all clear" on quiet days too
+  ntfy_server: https://ntfy.sh
+  smtp_host: smtp.gmail.com
+  smtp_port: 587
