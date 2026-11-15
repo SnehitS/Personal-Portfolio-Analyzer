@@ -68,6 +68,8 @@ def check(snap: PortfolioSnapshot, cfg: dict | None = None, today: date | None =
 
     for e in events or []:
         days = (e.day - today).days
+        if days < 0:
+            continue
         if e.kind == "earnings" and days <= c["earnings_days"]:
             when = "today" if days == 0 else "tomorrow" if days == 1 else f"in {days} days"
             detail = f" ({e.detail})" if e.detail else ""
