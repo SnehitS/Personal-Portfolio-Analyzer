@@ -148,7 +148,7 @@ powershell -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Time 16:30   # lo
 powershell -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Remove
 ```
 
-The task only runs while you're logged in. If the PC was asleep at the scheduled time, it runs on wake. Output is appended to `reports/logs/run.log`. An unattended Robinhood login needs `ROBINHOOD_TOTP_SECRET` in `.env`. Without it, the job reuses the saved session until that expires, and after that the snapshot step fails and you're notified.
+The task only runs while you're logged in. If the PC was asleep at the scheduled time, it runs on wake. Output is appended to `reports/logs/run.log`. The job reuses your saved Robinhood login, which it asks to last 30 days (`robinhood.session_days`; Robinhood may cap it). When the login expires, Robinhood sends a push to approve it in its app. The job waits 10 minutes (`robinhood.login_timeout_min`). If you don't approve in time, the snapshot step fails, the reports use the last snapshot, and you're notified. If your account has authenticator-app 2FA, put its secret in `ROBINHOOD_TOTP_SECRET` and no approval is ever needed.
 
 **Notifications** go to the channels listed under `notify.channels` in settings:
 - `desktop`: a Windows toast. No setup needed; this is the default.
