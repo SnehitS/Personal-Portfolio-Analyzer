@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from urllib.parse import urlparse
 
@@ -13,6 +14,12 @@ log = logging.getLogger(__name__)
 DEFAULT_UA = "Personal-Portfolio-Analyzer/0.2"
 _last_call: dict[str, float] = {}
 _session = requests.Session()
+_SECRET_PARAMS = re.compile(r"((?:token|apikey|api_key|key)=)[^&\s)'\"]+", re.IGNORECASE)
+
+
+def redact(text: str) -> str:
+    """Hide API keys in URLs before they reach a log: "token=abc123" -> "token=***"."""
+    return _SECRET_PARAMS.sub(r"\1***", text)
 
 
 def get(url: str, params: dict | None = None, *, min_interval: float = 0.0,
@@ -27,7 +34,7 @@ def get(url: str, params: dict | None = None, *, min_interval: float = 0.0,
         resp = _session.get(url, params=params, timeout=timeout,
                             headers={"User-Agent": user_agent})
     except requests.RequestException as exc:
-        log.warning("request to %s failed: %s", host, exc)
+        log.warning("request to %s failed: %s", host, redact(str(exc)))
         return None
     finally:
         _last_call[host] = time.monotonic()
