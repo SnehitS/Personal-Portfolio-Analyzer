@@ -53,6 +53,18 @@ alerts:                         # `report alerts`; "high" alerts are in position
   filing_hours: 24              # 8-Ks filed in the last day
   high_weight: 0.05
 
+alphavantage:                   # insider trades, macro and earnings calls (free key: 25 calls/day)
+  max_calls: 20                 # per run, leaving a few for `earnings-call` by hand
+  refresh_hours: 20             # skip anything fetched more recently than this
+  call_lookback_days: 7         # look for transcripts of earnings reported this recently
+
+insiders:                       # which Form 4 trades show up in reports and alerts
+  min_buy: 25000                # open-market purchases at least this big ($)
+  min_sale: 1000000             # sales at least this big (most sales are routine)
+
+earnings_calls:
+  model: claude-haiku-5-5       # summarizes each transcript in a few bullets
+
 robinhood:
   session_days: 30              # how long a saved login is asked to last (Robinhood may cap it)
   login_timeout_min: 10         # wait this long for you to approve a login in the Robinhood app

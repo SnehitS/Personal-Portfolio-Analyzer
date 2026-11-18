@@ -10,6 +10,9 @@
     python -m src.cli report daily                # write today's report to reports/daily/
     python -m src.cli report weekly               # this week so far, to reports/weekly/
     python -m src.cli report alerts               # what needs attention today
+    python -m src.cli insiders                    # notable insider buying and selling
+    python -m src.cli macro                       # rates and inflation backdrop
+    python -m src.cli earnings-call NFLX          # summary of the latest earnings call
     python -m src.cli run                         # all of the above, then notify (for the scheduler)
     python -m src.cli notify --test               # check your notification channels
 """
@@ -542,8 +545,16 @@ def cmd_report(args, cfg: dict) -> list | None:
     events = catalysts.build(snap, today, horizon,
                              cfg.get("catalysts", {}).get("macro_events"), detail)
 
+    from src.update_engine import extras
+    now = datetime.now(timezone.utc)
+    stocks_by_value = extras.stock_tickers(snap)
+
     if args.kind == "alerts":
-        found = alerts.check(snap, cfg.get("alerts"), today, sentiment, events, stored)
+        new_trades = extras.new_insider_trades(stocks_by_value, cfg, db, now)
+        new_calls = [(r["ticker"], r["quarter"], r["summary"]) for r in
+                     storage.load_earnings_calls(stocks_by_value, now - timedelta(hours=24), db)]
+        found = alerts.check(snap, cfg.get("alerts"), today, sentiment, events, stored,
+                             insider_trades=new_trades, calls=new_calls)
         path = report.write_report("alerts", alerts.render(found, today), today)
         for a in found:
             color = "red" if a.level == "high" else "yellow"
@@ -552,14 +563,20 @@ def cmd_report(args, cfg: dict) -> list | None:
         return found
 
     flags = metrics.risk_flags(snap, cfg["risk"], today)
+    extra_sections = [
+        extras.calls_section(stocks_by_value, db, now, days=7 if is_weekly else 3),
+        extras.insider_section(stocks_by_value, cfg, db, today,
+                               days=rep_cfg.get("insider_days", 30 if is_weekly else 14)),
+        extras.macro_section(db, today),
+    ]
     if is_weekly:
         markdown = weekly.render(snap, today, change, sentiment, events, flags,
                                  movers=rep_cfg.get("movers", 10),
-                                 news_days=round(news_hours / 24))
+                                 news_days=round(news_hours / 24), extras=extra_sections)
     else:
         markdown = daily.render(snap, today, change, sentiment, events, flags,
                                 movers=rep_cfg.get("movers", 5),
-                                news_window=f"last {news_hours} hours")
+                                news_window=f"last {news_hours} hours", extras=extra_sections)
     path = report.write_report(args.kind, markdown, today)
     if args.print:
         console.print(Markdown(markdown))
@@ -620,6 +637,8 @@ def cmd_run(args, cfg: dict) -> None:
     if not args.no_news:
         step("news", cmd_news, Namespace(tickers=[], days=None, limit=3, no_fetch=False,
                                          no_score=False, why=False))
+    if not args.no_news:
+        step("alpha vantage", cmd_refresh_av, Namespace())
     step("daily report", cmd_report, Namespace(kind="daily", print=False))
     weekly_day = run_cfg.get("weekly_on", "friday").lower()
     if f"{today:%A}".lower() == weekly_day or args.weekly:
@@ -639,6 +658,107 @@ def cmd_run(args, cfg: dict) -> None:
                   f"{len(failures)} step(s) failed.")
     if failures:
         raise SystemExit(1)
+
+
+def cmd_refresh_av(args, cfg: dict) -> None:
+    """Insider trades, macro series and new earnings call transcripts from Alpha Vantage."""
+    from src.update_engine import extras
+
+    db = Path(cfg["database"])
+    snap = storage.load_latest_snapshot(db)
+    if snap is None:
+        console.print("No snapshots yet. Run `python -m src.cli snapshot` first.")
+        return
+    with console.status("Checking Alpha Vantage (insiders, macro, earnings calls)..."):
+        res = extras.refresh(snap, cfg, db)
+    calls = ", ".join(f"{t} {q}" for t, q in res.calls_new) or "none"
+    console.print(f"Alpha Vantage: {res.insider_trades_new} new insider trades, "
+                  f"macro updated: {', '.join(res.macro_updated) or 'already current'}, "
+                  f"new earnings calls: {calls} ({res.calls_used} calls used)")
+    if res.stopped:
+        console.print(f"[yellow]Stopped early:[/yellow] {res.stopped}")
+
+
+def cmd_insiders(args, cfg: dict) -> None:
+    from src.portfolio_analysis import insiders
+    from src.update_engine import extras
+
+    db = Path(cfg["database"])
+    snap = storage.load_latest_snapshot(db)
+    if snap is None:
+        console.print("No snapshots yet. Run `python -m src.cli snapshot` first.")
+        return
+    if not args.no_fetch:
+        cmd_refresh_av(args, cfg)
+    tickers = [t.upper() for t in args.tickers] or extras.stock_tickers(snap)
+    trades = storage.load_insider_trades(tickers, date.today() - timedelta(days=args.days),
+                                         db_path=db)
+    picked = insiders.combine(trades) if args.all else insiders.notable(trades, cfg.get("insiders"))
+    table = Table(title=f"Insider trades, last {args.days} days"
+                        + ("" if args.all else " (open-market buys and large sales)"))
+    for col in ("Date", "Ticker", "Insider", "Title", "Trade", "Shares", "Value"):
+        table.add_column(col, justify="right" if col in ("Shares", "Value") else "left",
+                         overflow="fold")
+    for t in sorted(picked, key=lambda t: t.day, reverse=True)[:args.limit]:
+        color = "green" if t.code == "P" else "red" if t.code == "S" else "dim"
+        table.add_row(f"{t.day:%b %d}", t.ticker, t.name, t.title,
+                      f"[{color}]{t.verb or t.code}[/{color}]", f"{t.shares:,.0f}",
+                      insiders.money(t.value) if t.value else "-")
+    console.print(table)
+    if not picked:
+        console.print("[dim]Nothing notable. `--all` shows every filing, including option "
+                      "exercises and tax withholding.[/dim]")
+
+
+def cmd_macro(args, cfg: dict) -> None:
+    from rich.markdown import Markdown
+
+    from src.update_engine import extras
+
+    db = Path(cfg["database"])
+    if not args.no_fetch and storage.load_latest_snapshot(db) is not None:
+        cmd_refresh_av(args, cfg)
+    section = extras.macro_section(db, date.today())
+    console.print(Markdown("\n".join(section)) if section else
+                  "No macro data yet. Set ALPHAVANTAGE_API_KEY and run without --no-fetch.")
+
+
+def cmd_earnings_call(args, cfg: dict) -> None:
+    import json
+
+    from rich.markdown import Markdown
+
+    from src.data_pipeline import alpha_vantage as av
+    from src.update_engine import extras
+
+    db = Path(cfg["database"])
+    ticker = args.ticker.upper()
+    rows = [r for r in storage.load_earnings_calls([ticker], db_path=db)
+            if not args.quarter or r["quarter"] == args.quarter]
+    if not rows or args.refresh:
+        # Default: this quarter's label (companies whose fiscal year runs ahead), then the
+        # last one, which most companies have reported by now. Up to two Alpha Vantage calls.
+        quarters = [args.quarter] if args.quarter else av.recent_quarters(date.today())
+        client = av.Client(len(quarters))
+        for quarter in quarters:
+            with console.status(f"Fetching the {ticker} {quarter} call..."):
+                entries = av.transcript(client, ticker, quarter)
+            if entries:
+                summary = extras._summarize(ticker, quarter, entries, cfg)
+                storage.save_earnings_call(ticker, quarter, None, json.dumps(entries), summary,
+                                           (cfg.get("earnings_calls") or {}).get("model")
+                                           if summary else None,
+                                           datetime.now(timezone.utc), db)
+                break
+        rows = [r for r in storage.load_earnings_calls([ticker], db_path=db)
+                if not args.quarter or r["quarter"] == args.quarter]
+    if not rows:
+        console.print(f"No transcript found for {ticker}"
+                      + (f" {args.quarter}" if args.quarter else "") + ".")
+        return
+    r = rows[0]
+    console.print(Markdown(f"**{ticker} {r['quarter']} earnings call**\n\n"
+                           + (r["summary"] or "_No summary: set ANTHROPIC_API_KEY._")))
 
 
 def cmd_notify(args, cfg: dict) -> None:
@@ -702,6 +822,24 @@ def main() -> None:
     rep.add_argument("kind", choices=["daily", "weekly", "alerts"])
     rep.add_argument("--print", action="store_true", help="also show it in the terminal")
     rep.set_defaults(func=cmd_report)
+
+    ins = sub.add_parser("insiders", help="insider buying and selling in your holdings")
+    ins.add_argument("tickers", nargs="*", help="defaults to everything in the latest snapshot")
+    ins.add_argument("--days", type=int, default=90)
+    ins.add_argument("--limit", type=int, default=30)
+    ins.add_argument("--all", action="store_true", help="every filing, not just notable trades")
+    ins.add_argument("--no-fetch", action="store_true", help="only show what's stored")
+    ins.set_defaults(func=cmd_insiders)
+
+    mac = sub.add_parser("macro", help="Fed funds, inflation and the 10-year yield")
+    mac.add_argument("--no-fetch", action="store_true", help="only show what's stored")
+    mac.set_defaults(func=cmd_macro)
+
+    call = sub.add_parser("earnings-call", help="summary of a holding's latest earnings call")
+    call.add_argument("ticker")
+    call.add_argument("--quarter", help="e.g. 2026Q3 (default: the latest one available)")
+    call.add_argument("--refresh", action="store_true", help="fetch again even if stored")
+    call.set_defaults(func=cmd_earnings_call)
 
     run = sub.add_parser("run", help="snapshot, news, reports and alerts, then notify")
     run.add_argument("--force", action="store_true", help="run on weekends too")
