@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from src.data_pipeline.models import (
-    AccountSummary, Holding, NewsItem, OptionPosition, PortfolioSnapshot, SentimentScore,
+    AccountSummary, Holding, InsiderTrade, NewsItem, OptionPosition, PortfolioSnapshot, SentimentScore,
     Transaction,
 )
 
@@ -56,6 +56,23 @@ CREATE TABLE IF NOT EXISTS sentiment (
     ticker TEXT NOT NULL, url TEXT NOT NULL, model TEXT NOT NULL,
     label TEXT, score REAL, confidence REAL, rationale TEXT, scored_at TEXT,
     PRIMARY KEY (ticker, url, model)
+);
+CREATE TABLE IF NOT EXISTS insider_trades (
+    ticker TEXT NOT NULL, day TEXT NOT NULL, executive TEXT NOT NULL, code TEXT NOT NULL,
+    shares REAL NOT NULL, price REAL, title TEXT, security TEXT, fetched_at TEXT,
+    PRIMARY KEY (ticker, day, executive, code, shares, price)
+);
+CREATE TABLE IF NOT EXISTS macro (
+    series TEXT NOT NULL, date TEXT NOT NULL, value REAL,
+    PRIMARY KEY (series, date)
+);
+CREATE TABLE IF NOT EXISTS earnings_calls (
+    ticker TEXT NOT NULL, quarter TEXT NOT NULL, reported TEXT, fetched_at TEXT,
+    transcript TEXT, summary TEXT, model TEXT,
+    PRIMARY KEY (ticker, quarter)
+);
+CREATE TABLE IF NOT EXISTS fetch_log (
+    key TEXT PRIMARY KEY, fetched_at TEXT
 );
 CREATE TABLE IF NOT EXISTS iv_history (
     ticker TEXT NOT NULL, date TEXT NOT NULL, iv30 REAL, spot REAL,
@@ -276,3 +293,81 @@ def load_iv_history(ticker: str, since: date, db_path: Path = DEFAULT_DB) -> lis
         rows = conn.execute("SELECT iv30 FROM iv_history WHERE ticker = ? AND date >= ?"
                             " ORDER BY date", (ticker, since.isoformat())).fetchall()
     return [r["iv30"] for r in rows if r["iv30"] is not None]
+
+
+def save_insider_trades(trades: list[InsiderTrade], fetched_at: datetime,
+                        db_path: Path = DEFAULT_DB) -> int:
+    """Insert trades we haven't seen; returns how many were new. A trade keeps the time it
+    was first fetched, so alerts can fire on new filings only."""
+    with connect(db_path) as conn:
+        before = conn.total_changes
+        conn.executemany(
+            "INSERT OR IGNORE INTO insider_trades (ticker, day, executive, code, shares, price,"
+            " title, security, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(t.ticker, t.day.isoformat(), t.executive, t.code, t.shares, t.price, t.title,
+              t.security, _utc_iso(fetched_at)) for t in trades])
+        return conn.total_changes - before
+
+
+def load_insider_trades(tickers: list[str], since: date, fetched_since: datetime | None = None,
+                        db_path: Path = DEFAULT_DB) -> list[InsiderTrade]:
+    marks = ", ".join("?" * len(tickers))
+    sql = f"SELECT * FROM insider_trades WHERE ticker IN ({marks}) AND day >= ?"
+    params: list = [*tickers, since.isoformat()]
+    if fetched_since:
+        sql += " AND fetched_at >= ?"
+        params.append(_utc_iso(fetched_since))
+    with connect(db_path) as conn:
+        rows = conn.execute(sql + " ORDER BY day DESC", params).fetchall()
+    return [InsiderTrade(r["ticker"], date.fromisoformat(r["day"]), r["executive"], r["title"],
+                         r["code"], r["shares"], r["price"], r["security"] or "",
+                         datetime.fromisoformat(r["fetched_at"])) for r in rows]
+
+
+def save_macro(series: str, points: list[tuple[date, float]], db_path: Path = DEFAULT_DB) -> None:
+    with connect(db_path) as conn:
+        conn.executemany("INSERT OR REPLACE INTO macro (series, date, value) VALUES (?, ?, ?)",
+                         [(series, d.isoformat(), v) for d, v in points])
+
+
+def load_macro(series: str, since: date, db_path: Path = DEFAULT_DB) -> list[tuple[date, float]]:
+    """Oldest first."""
+    with connect(db_path) as conn:
+        rows = conn.execute("SELECT date, value FROM macro WHERE series = ? AND date >= ?"
+                            " ORDER BY date", (series, since.isoformat())).fetchall()
+    return [(date.fromisoformat(r["date"]), r["value"]) for r in rows]
+
+
+def save_earnings_call(ticker: str, quarter: str, reported: date | None, transcript: str,
+                       summary: str | None, model: str | None, fetched_at: datetime,
+                       db_path: Path = DEFAULT_DB) -> None:
+    with connect(db_path) as conn:
+        conn.execute("INSERT OR REPLACE INTO earnings_calls (ticker, quarter, reported,"
+                     " fetched_at, transcript, summary, model) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (ticker, quarter, reported.isoformat() if reported else None,
+                      _utc_iso(fetched_at), transcript, summary, model))
+
+
+def load_earnings_calls(tickers: list[str] | None = None, fetched_since: datetime | None = None,
+                        db_path: Path = DEFAULT_DB) -> list[sqlite3.Row]:
+    sql, params = "SELECT * FROM earnings_calls WHERE 1=1", []
+    if tickers:
+        sql += f" AND ticker IN ({', '.join('?' * len(tickers))})"
+        params += tickers
+    if fetched_since:
+        sql += " AND fetched_at >= ?"
+        params.append(_utc_iso(fetched_since))
+    with connect(db_path) as conn:
+        return conn.execute(sql + " ORDER BY fetched_at DESC", params).fetchall()
+
+
+def last_fetched(key: str, db_path: Path = DEFAULT_DB) -> datetime | None:
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT fetched_at FROM fetch_log WHERE key = ?", (key,)).fetchone()
+    return datetime.fromisoformat(row["fetched_at"]) if row else None
+
+
+def mark_fetched(key: str, when: datetime, db_path: Path = DEFAULT_DB) -> None:
+    with connect(db_path) as conn:
+        conn.execute("INSERT OR REPLACE INTO fetch_log (key, fetched_at) VALUES (?, ?)",
+                     (key, _utc_iso(when)))

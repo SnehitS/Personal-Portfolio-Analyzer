@@ -191,3 +191,35 @@ class SentimentScore:
     score: float           # -1 bearish .. +1 bullish
     confidence: float | None = None
     rationale: str = ""    # LLMs explain themselves; FinBERT leaves this empty
+
+
+INSIDER_VERBS = {"P": "bought", "S": "sold"}  # open-market trades; the rest are paperwork
+
+
+@dataclass
+class InsiderTrade:
+    """One Form 4 line: an officer, director or 10% owner trading the company's stock."""
+
+    ticker: str
+    day: date
+    executive: str         # "TAN, LIP BU" as filed
+    title: str
+    code: str              # P purchase, S sale, F tax withholding, M option exercise, A award...
+    shares: float
+    price: float | None = None
+    security: str = ""
+    fetched_at: datetime | None = None  # first time we saw it, so alerts fire once
+
+    @property
+    def value(self) -> float | None:
+        return self.shares * self.price if self.price else None
+
+    @property
+    def verb(self) -> str | None:
+        return INSIDER_VERBS.get(self.code)
+
+    @property
+    def name(self) -> str:
+        """"TAN, LIP BU" -> "Lip Bu Tan"."""
+        last, _, first = self.executive.partition(", ")
+        return f"{first} {last}".strip().title() if first else self.executive.title()
