@@ -602,6 +602,28 @@ def _day_summary(snap: PortfolioSnapshot) -> str:
     return line
 
 
+def _online(host: str = "api.robinhood.com") -> bool:
+    import socket
+    try:
+        socket.getaddrinfo(host, 443)
+        return True
+    except OSError:
+        return False
+
+
+def _wait_for_network(minutes: float, check=_online, sleep=None) -> bool:
+    """A scheduled run often starts as the PC wakes, before Wi-Fi is back. Wait for it."""
+    import time
+    sleep = sleep or time.sleep
+    deadline = time.monotonic() + minutes * 60
+    while not check():
+        if time.monotonic() >= deadline:
+            return False
+        console.print("Waiting for the network...")
+        sleep(15)
+    return True
+
+
 def cmd_run(args, cfg: dict) -> None:
     """Snapshot, news, reports and alerts in one go, then notify. Built to run unattended:
     a step that fails is logged and reported, and the rest carry on with stored data."""
@@ -616,6 +638,9 @@ def cmd_run(args, cfg: dict) -> None:
         console.print(f"{today:%A}: markets are closed, nothing to do (use --force to run anyway).")
         return
     console.print(f"[bold]Run started {datetime.now():%Y-%m-%d %H:%M}[/bold]")
+    wait = run_cfg.get("network_wait_min", 10)
+    if not _wait_for_network(wait):
+        console.print(f"[red]No internet after {wait} minutes;[/red] running on stored data.")
 
     failures: list[str] = []
     found: list = []

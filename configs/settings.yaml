@@ -71,6 +71,7 @@ robinhood:
 
 run:                            # `run`: what the scheduled job does
   weekly_on: friday             # also write the weekly report on this day
+  network_wait_min: 10          # after waking from sleep, wait this long for Wi-Fi
 
 notify:                         # where `run` sends alerts; secrets go in .env
   channels: [desktop, ntfy]     # any of: desktop (Windows toast), ntfy (phone push), email
