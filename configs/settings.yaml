@@ -60,7 +60,7 @@ run:                            # `run`: what the scheduled job does
   weekly_on: friday             # also write the weekly report on this day
 
 notify:                         # where `run` sends alerts; secrets go in .env
-  channels: [desktop]           # any of: desktop (Windows toast), ntfy (phone push), email
+  channels: [desktop, ntfy]     # any of: desktop (Windows toast), ntfy (phone push), email
   min_level: watch              # "high" to only hear about alerts in big positions
   always: false                 # true sends a one-line "all clear" on quiet days too
   ntfy_server: https://ntfy.sh
