@@ -73,6 +73,7 @@ class Fetcher:
         try:
             return parse(ticker, resp.json())
         except RateLimited as exc:
-            log.warning("Alpha Vantage quota reached, skipping it for this run: %s", exc)
+            what = "needs a paid plan" if "premium" in str(exc).lower() else "quota reached"
+            log.warning("Alpha Vantage %s, skipping it for this run: %s", what, exc)
             self.calls_left = 0
             return []
