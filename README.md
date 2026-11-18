@@ -130,9 +130,26 @@ Alerts in positions of 5%+ are marked "high". Thresholds are under `alerts` in s
 
 Window sizes are under `reports` in `configs/settings.yaml`, with weekly overrides under `reports.weekly`. Reports are gitignored.
 
+### Insider trades, earnings calls and macro
+
+These use Alpha Vantage's free key (`ALPHAVANTAGE_API_KEY`, 25 calls a day). Its news endpoint now needs a paid plan, but these three still work for free:
+
+```bash
+python -m src.cli insiders               # open-market buys and large sales, last 90 days
+python -m src.cli insiders --all         # every Form 4, including option exercises
+python -m src.cli earnings-call NFLX     # a few bullets on the latest call
+python -m src.cli macro                  # 10-year yield, Fed funds, CPI inflation
+```
+
+- **Insider trades:** only open-market **buys** of $25K+ and **sales** of $1M+ are shown. Option exercises, tax withholding and awards are paperwork and are skipped. A filing's many fills are merged into one trade per person per day. A buy that's newly filed is an alert, marked "high" in a 5%+ position. Large sales are "watch" alerts, since insiders sell for many reasons.
+- **Earnings calls:** when Finnhub's calendar shows a holding reported in the last 7 days, the run fetches the transcript. Claude (Haiku, a fraction of a cent per call) summarizes it into 4–6 bullets: guidance, tone, risks and analyst pushback. If the transcript isn't out yet, the run retries the next day. A new summary is an alert and gets its own section in the daily report.
+- **Macro:** the 10-year Treasury yield with its weekly and monthly change, the Fed funds rate, and CPI inflation year over year. This is shown in the daily and weekly reports.
+
+`run` refreshes all three after the news step. Everything is stored, and each fetch is logged, so a second run on the same day spends no calls. A normal day uses about 10 calls: one per holding plus three for macro. Thresholds and limits are under `alphavantage`, `insiders` and `earnings_calls` in settings.
+
 ### Running it on a schedule
 
-`run` does the whole day in one go: snapshot, news, the daily report, the weekly report on Fridays, and alerts. Then it sends a notification. If a step fails, the error is logged and the remaining steps carry on with stored data. The failure is included in the notification, and the command exits with code 1. It does nothing on weekends unless you pass `--force`.
+`run` does the whole day in one go: snapshot, news, Alpha Vantage extras, the daily report, the weekly report on Fridays, and alerts. Then it sends a notification. If a step fails, the error is logged and the remaining steps carry on with stored data. The failure is included in the notification, and the command exits with code 1. It does nothing on weekends unless you pass `--force`.
 
 ```bash
 python -m src.cli run                    # what the scheduled job runs
