@@ -178,7 +178,9 @@ def cmd_snapshot(args, cfg: dict) -> None:
         source = CsvSource(args.csv)
     else:
         from src.data_pipeline.sources.robinhood import RobinhoodSource
-        source = RobinhoodSource()
+        rh = cfg.get("robinhood", {})
+        source = RobinhoodSource(session_days=rh.get("session_days", 30),
+                                 login_timeout_min=rh.get("login_timeout_min", 10))
 
     with console.status(f"Fetching portfolio from {source.name}..."):
         snap = source.fetch_snapshot()

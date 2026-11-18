@@ -7,6 +7,7 @@ READ-ONLY: only the read functions below are imported. Nothing in this module
 from __future__ import annotations
 
 import os
+import threading
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -17,6 +18,8 @@ from src.data_pipeline.models import (
 from src.data_pipeline.sources.base import PortfolioSource
 
 MARKET_TZ = ZoneInfo("America/New_York")
+SESSION_DAYS = 30       # how long a saved login is asked to last (Robinhood may cap it)
+LOGIN_TIMEOUT_MIN = 10  # how long to wait for you to approve a login in the Robinhood app
 
 
 def _f(value) -> float | None:
@@ -36,12 +39,15 @@ class RobinhoodSource(PortfolioSource):
     name = "robinhood"
 
     def __init__(self, username: str | None = None, password: str | None = None,
-                 totp_secret: str | None = None):
+                 totp_secret: str | None = None, session_days: float = SESSION_DAYS,
+                 login_timeout_min: float = LOGIN_TIMEOUT_MIN):
         self.username = username or os.getenv("ROBINHOOD_USERNAME")
         self.password = password or os.getenv("ROBINHOOD_PASSWORD")
         self.totp_secret = totp_secret or os.getenv("ROBINHOOD_TOTP_SECRET")
         if not self.username or not self.password:
             raise ValueError("Set ROBINHOOD_USERNAME and ROBINHOOD_PASSWORD in .env")
+        self.session_days = session_days
+        self.login_timeout_min = login_timeout_min
 
     def _login(self) -> None:
         from robin_stocks.robinhood import login
@@ -50,9 +56,29 @@ class RobinhoodSource(PortfolioSource):
         if self.totp_secret:
             import pyotp
             mfa_code = pyotp.TOTP(self.totp_secret).now()
-        # Without a TOTP secret, robin_stocks prompts for an SMS code or app approval.
-        # The session is cached (~/.tokens) so later runs usually skip 2FA.
-        login(self.username, self.password, mfa_code=mfa_code, store_session=True)
+        # Without a TOTP secret, Robinhood asks you to approve the login in its app (or for
+        # an SMS/email code). The session is cached in ~/.tokens so most runs skip that.
+        # robin_stocks waits forever for an app approval, so run it in a thread and give up
+        # after a while: an unattended run then fails cleanly instead of hanging.
+        result: dict = {}
+
+        def attempt() -> None:
+            try:
+                result["ok"] = login(self.username, self.password, mfa_code=mfa_code,
+                                     store_session=True,
+                                     expiresIn=int(self.session_days * 86400))
+            except BaseException as e:  # noqa: BLE001 - re-raised in the caller's thread
+                result["error"] = e
+
+        worker = threading.Thread(target=attempt, name="robinhood-login", daemon=True)
+        worker.start()
+        worker.join(self.login_timeout_min * 60)
+        if worker.is_alive():
+            raise TimeoutError(f"Robinhood login wasn't approved within "
+                               f"{self.login_timeout_min:g} minutes. Approve it in the "
+                               "Robinhood app, or run `snapshot` by hand.")
+        if "error" in result:
+            raise result["error"]
 
     def fetch_snapshot(self) -> PortfolioSnapshot:
         from robin_stocks.robinhood import build_holdings, load_account_profile
