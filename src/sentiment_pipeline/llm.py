@@ -17,6 +17,9 @@ from src.sentiment_pipeline.finbert import text_for
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-opus-5-5"
+# Models with a server-side refusal fallback; Haiku has none, so it gets a plain request.
+FALLBACK_MODELS = ("claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5", "claude-opus-5",
+                   "claude-sonnet-5-5")
 LABELS = ("positive", "negative", "neutral")
 
 SYSTEM = """You rate financial news for someone who holds the stock.
@@ -115,18 +118,21 @@ class LlmScorer:
                      items: list[NewsItem]) -> list[SentimentScore]:
         import anthropic
 
+        request = dict(
+            model=self.model,
+            max_tokens=16000,
+            system=SYSTEM,
+            messages=[{"role": "user", "content": build_prompt(ticker, name, items)}],
+            output_config={"effort": "low",
+                           "format": {"type": "json_schema", "schema": SCHEMA}},
+        )
         try:
-            response = self.client.beta.messages.create(
-                model=self.model,
-                max_tokens=16000,
-                system=SYSTEM,
-                messages=[{"role": "user", "content": build_prompt(ticker, name, items)}],
-                output_config={"effort": "low",
-                               "format": {"type": "json_schema", "schema": SCHEMA}},
+            if self.model in FALLBACK_MODELS:
                 # If a safety classifier declines, the API retries on a fallback model
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-            )
+                response = self.client.beta.messages.create(
+                    **request, betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+            else:
+                response = self.client.messages.create(**request)
         except anthropic.AuthenticationError:
             log.warning("Anthropic API key missing or invalid; skipping LLM sentiment")
             raise
