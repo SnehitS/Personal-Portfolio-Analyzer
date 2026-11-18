@@ -21,9 +21,10 @@ def week_start(day: date) -> datetime:
 def render(snap: PortfolioSnapshot, today: date, change: PortfolioChange | None = None,
            sentiment: list[TickerSentiment] | None = None,
            events: list[Catalyst] | None = None, flags: list[str] | None = None,
-           movers: int = 10, news_days: int = 7) -> str:
+           movers: int = 10, news_days: int = 7, extras: list[list[str]] | None = None) -> str:
     monday = week_start(today).date()
     return daily.render(
         snap, today, change, sentiment, events, flags, movers,
         title=f"# Weekly report: week of {monday:%b %d, %Y}",
-        change_label="This week", since="this week", news_window=f"last {news_days} days")
+        change_label="This week", since="this week", news_window=f"last {news_days} days",
+        extras=extras)

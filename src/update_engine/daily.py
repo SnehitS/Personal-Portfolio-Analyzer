@@ -109,7 +109,7 @@ def render(snap: PortfolioSnapshot, today: date, change: PortfolioChange | None 
            events: list[Catalyst] | None = None, flags: list[str] | None = None,
            movers: int = 5, title: str | None = None,
            change_label: str = "Since last snapshot", since: str = "since last snapshot",
-           news_window: str = "last 36 hours") -> str:
+           news_window: str = "last 36 hours", extras: list[list[str]] | None = None) -> str:
     """The report as Markdown. Sections with nothing to say are left out. The weekly
     report reuses this with its own title and labels."""
     sections = [
@@ -120,6 +120,7 @@ def render(snap: PortfolioSnapshot, today: date, change: PortfolioChange | None 
         _trades(change, since),
         _news(sentiment or [], news_window),
         _catalysts(events or [], today),
+        *(extras or []),
         ["## Risk flags", "", *(f"- {f}" for f in flags)] if flags else [],
     ]
     return "\n\n".join("\n".join(s) for s in sections if s) + "\n"

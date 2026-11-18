@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
-from src.data_pipeline.models import NewsItem, PortfolioSnapshot
+from src.data_pipeline.models import InsiderTrade, NewsItem, PortfolioSnapshot
 from src.portfolio_analysis.catalysts import Catalyst
 from src.portfolio_analysis.metrics import weights
 from src.sentiment_pipeline.aggregate import TickerSentiment
@@ -33,14 +33,17 @@ DEFAULTS = {
 class Alert:
     level: str        # high or watch
     ticker: str       # "" for market-wide
-    kind: str         # move, extreme, loss, earnings, expiry, sentiment, filing
+    kind: str         # move, extreme, loss, earnings, expiry, sentiment, filing, insider, call
     message: str
 
 
 def check(snap: PortfolioSnapshot, cfg: dict | None = None, today: date | None = None,
           sentiment: list[TickerSentiment] | None = None,
           events: list[Catalyst] | None = None, filings: list[NewsItem] | None = None,
-          now: datetime | None = None) -> list[Alert]:
+          now: datetime | None = None, insider_trades: list[InsiderTrade] | None = None,
+          calls: list[tuple[str, str, str | None]] | None = None) -> list[Alert]:
+    """insider_trades: notable trades first seen today. calls: (ticker, quarter, summary)
+    for earnings call transcripts that arrived today."""
     c = {**DEFAULTS, **(cfg or {})}
     today = today or date.today()
     now = now or datetime.now(timezone.utc)
@@ -91,6 +94,17 @@ def check(snap: PortfolioSnapshot, cfg: dict | None = None, today: date | None =
     for f in filings or []:
         if f.kind == "filing" and f.form.startswith("8-K") and f.published_at >= cutoff:
             out.append(Alert(level(f.ticker), f.ticker, "filing", f"{f.ticker}: {f.headline}"))
+
+    from src.portfolio_analysis.insiders import describe
+    for t in insider_trades or []:
+        # Buying with their own money is the signal worth acting on; big sales are context
+        lvl = level(t.ticker) if t.code == "P" else "watch"
+        out.append(Alert(lvl, t.ticker, "insider", f"Insider {describe(t)}"))
+
+    from src.update_engine.extras import first_bullet
+    for ticker, quarter, summary in calls or []:
+        out.append(Alert(level(ticker), ticker, "call",
+                         f"{ticker} {quarter} earnings call: {first_bullet(summary)}"))
 
     return sorted(out, key=lambda a: (LEVELS[a.level], -w.get(a.ticker, 0), a.ticker))
 
