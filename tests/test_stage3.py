@@ -307,3 +307,21 @@ def test_run_skips_weekends(monkeypatch):
     monkeypatch.setattr(cli, "cmd_snapshot", lambda a, c: pytest.fail("ran on a Saturday"))
     cli.cmd_run(Namespace(force=False, weekly=False, no_snapshot=False, no_news=False,
                           no_notify=False), {})
+
+
+def test_redact_hides_api_keys():
+    from src.data_pipeline.news.http import redact
+
+    msg = "Max retries exceeded with url: /api?symbol=CAVA&token=abc123 (Caused by X)"
+    assert redact(msg) == "Max retries exceeded with url: /api?symbol=CAVA&token=*** (Caused by X)"
+    assert redact("q?function=CPI&apikey=XYZ") == "q?function=CPI&apikey=***"
+
+
+def test_wait_for_network():
+    from src import cli
+
+    answers = iter([False, False, True])
+    slept = []
+    assert cli._wait_for_network(10, check=lambda: next(answers), sleep=slept.append)
+    assert slept == [15, 15]
+    assert not cli._wait_for_network(0, check=lambda: False, sleep=slept.append)
