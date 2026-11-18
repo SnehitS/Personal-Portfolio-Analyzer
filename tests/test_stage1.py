@@ -246,3 +246,42 @@ def test_benchmark_equivalent():
              (date(2025, 1, 9), -400.0)]  # Thursday, sells 2 shares
     assert metrics.benchmark_equivalent(flows, closes) == pytest.approx((10 + 10 - 2) * 400)
     assert metrics.benchmark_equivalent([(date(2024, 1, 1), 1.0)], closes) is None
+
+
+def test_robinhood_login_asks_for_long_session(monkeypatch):
+    import robin_stocks.robinhood as rh
+
+    from src.data_pipeline.sources.robinhood import RobinhoodSource
+
+    seen = {}
+    monkeypatch.setattr(rh, "login", lambda *a, **kw: seen.update(kw) or {"access_token": "x"})
+    RobinhoodSource("u", "p", session_days=30)._login()
+    assert seen["expiresIn"] == 30 * 86400 and seen["store_session"] is True
+
+
+def test_robinhood_login_gives_up_waiting_for_approval(monkeypatch):
+    import threading
+
+    import pytest
+    import robin_stocks.robinhood as rh
+
+    from src.data_pipeline.sources.robinhood import RobinhoodSource
+
+    never = threading.Event()
+    monkeypatch.setattr(rh, "login", lambda *a, **kw: never.wait())   # approval never comes
+    with pytest.raises(TimeoutError, match="Approve it in the Robinhood app"):
+        RobinhoodSource("u", "p", login_timeout_min=0.002)._login()
+    never.set()
+
+
+def test_robinhood_login_errors_reach_the_caller(monkeypatch):
+    import pytest
+    import robin_stocks.robinhood as rh
+
+    from src.data_pipeline.sources.robinhood import RobinhoodSource
+
+    def no_stdin(*a, **kw):
+        raise EOFError("no SMS code")
+    monkeypatch.setattr(rh, "login", no_stdin)
+    with pytest.raises(EOFError):
+        RobinhoodSource("u", "p")._login()
