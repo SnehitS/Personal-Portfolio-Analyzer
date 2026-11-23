@@ -25,14 +25,15 @@ Personal-Portfolio-Analyzer/
 │   ├── daily/                   # Daily portfolio/news updates
 │   ├── weekly/                  # Weekly summary updates
 │   ├── alerts/                  # Risk/event-based update outputs
+│   ├── ideas/                   # Add / hold / trim / sell ideas (Stage 4)
 │   └── logs/                    # run.log from the scheduled job
 ├── scripts/                     # schedule.ps1: Windows Task Scheduler setup for `run`
 ├── src/
 │   ├── data_pipeline/           # Robinhood/CSV ingestion, market data, news providers, storage
 │   ├── sentiment_pipeline/      # FinBERT and Claude scoring, per-ticker aggregation
-│   ├── portfolio_analysis/      # Metrics, technicals, options and catalyst calendar
+│   ├── portfolio_analysis/      # Metrics, technicals, options, catalysts and ideas
 │   └── update_engine/           # Daily/weekly reports, alerts and notifications (Stage 3)
-└── tests/                       # Offline unit tests for Stages 1-3
+└── tests/                       # Offline unit tests
 ```
 
 ## Stage 1: Portfolio data (done)
@@ -174,5 +175,31 @@ The task only runs while you're logged in. If the PC was asleep at the scheduled
 
 Nothing is sent on a quiet day unless `notify.always` is true. Set `notify.min_level: high` to only hear about alerts in large positions.
 
+## Stage 4: Ideas (in progress)
+
+```bash
+python -m src.cli ideas             # every stock holding, saved to reports/ideas/
+python -m src.cli ideas TSM INTC    # just these, not saved
+```
+
+Each holding gets **add**, **hold**, **trim** or **sell** from a points score, with every reason listed next to the points it added:
+
+| Signal | Points |
+| --- | ---: |
+| Uptrend (price above 50-day above 200-day) / downtrend | +1 / -1 |
+| RSI 30 or below / 70 or above | +0.5 / -0.5 |
+| Mean analyst target 20%+ above the price / 5%+ below (3+ analysts) | +1 / -1 |
+| Bullish / bearish news (3+ articles in the last 72 hours) | +0.5 / -0.5 |
+| Open-market insider buying of $25K+ in the last 90 days | +1 |
+
+A score of 2 or more is an add, -2 or less a trim, and -3 (every bearish signal at once) a sell. Position size overrides the score. Anything above `risk.max_position_weight` gets a trim, with the dollar amount that brings it back to the limit. Anything at 80% of the limit can't get an add.
+
+Some things are deliberately left out of the score:
+- **Your cost basis.** A stock doesn't know what you paid. Losses only show up as a tax note on a trim or sell, with the deductible amount and a wash-sale reminder.
+- **Insider sales.** People sell for too many reasons to read anything into them.
+- **Upcoming earnings** within 7 days, and gains lots turning long-term within 45 days. Both are notes on timing, not on direction.
+
+Analyst targets lag the price. After a sharp selloff every holding can look 50%+ below target, and that signal stops telling holdings apart. Thresholds are under `ideas` in settings. ETFs are skipped.
+
 ## Roadmap
-- **Stage 4 (next):** buy/sell/trim ideas, cash deployment, new long/short and options ideas, and later prediction markets.
+- **Stage 4, next:** cash deployment, new long/short ideas from a watchlist, options ideas (covered calls, cash-secured puts), and later prediction markets.
