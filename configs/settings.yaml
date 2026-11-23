@@ -65,6 +65,21 @@ insiders:                       # which Form 4 trades show up in reports and ale
 earnings_calls:
   model: claude-haiku-5-5       # summarizes each transcript in a few bullets
 
+ideas:                          # `ideas`: add / hold / trim / sell for your holdings
+  add_score: 2.0                # points needed for an add...
+  trim_score: -2.0              # ...a trim
+  sell_score: -3.0              # ...and a sell (-3 is every bearish signal at once)
+  add_room: 0.8                 # no adds once a position is 80% of risk.max_position_weight
+  analyst_upside: 0.20          # mean target this far above the price: +1
+  analyst_downside: -0.05       # this far below: -1
+  min_analysts: 3
+  min_articles: 3               # news needs this many articles to count
+  news_hours: 72                # how much stored news feeds the sentiment signal
+  insider_days: 90              # open-market insider buys this recent count...
+  insider_buy_min: 25000        # ...if at least this big ($)
+  earnings_days: 7              # note earnings this close
+  long_term_days: 45            # note gains lots turning long-term this soon
+
 robinhood:
   session_days: 30              # how long a saved login is asked to last (Robinhood may cap it)
   login_timeout_min: 10         # wait this long for you to approve a login in the Robinhood app

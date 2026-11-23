@@ -13,6 +13,7 @@
     python -m src.cli insiders                    # notable insider buying and selling
     python -m src.cli macro                       # rates and inflation backdrop
     python -m src.cli earnings-call NFLX          # summary of the latest earnings call
+    python -m src.cli ideas                       # add / hold / trim / sell ideas
     python -m src.cli run                         # all of the above, then notify (for the scheduler)
     python -m src.cli notify --test               # check your notification channels
 """
@@ -786,6 +787,48 @@ def cmd_earnings_call(args, cfg: dict) -> None:
                            + (r["summary"] or "_No summary: set ANTHROPIC_API_KEY._")))
 
 
+def _ideas(snap: PortfolioSnapshot, cfg: dict, today: date) -> list:
+    """Ideas for the snapshot's holdings from stored news sentiment and insider buys."""
+    from src.portfolio_analysis import ideas
+    from src.sentiment_pipeline import aggregate
+    from src.update_engine import extras
+
+    db = Path(cfg["database"])
+    idea_cfg = {"max_weight": cfg["risk"]["max_position_weight"], **cfg.get("ideas", {})}
+    tickers = [h.ticker for h in snap.holdings]
+    since = datetime.now(timezone.utc) - timedelta(hours=idea_cfg.get("news_hours", 72))
+    reads = aggregate.best_reads(storage.load_news(tickers, since, db),
+                                 storage.load_sentiment(tickers, db_path=db))
+    half_life = cfg.get("sentiment", {}).get("half_life_hours", 48)
+    sentiment = [aggregate.summarize(reads, t, half_life) for t in tickers]
+    from src.portfolio_analysis.insiders import combine
+    buys = combine(storage.load_insider_trades(
+        extras.stock_tickers(snap), today - timedelta(days=idea_cfg.get("insider_days", 90)),
+        db_path=db))
+    return ideas.suggest(snap, idea_cfg, today, sentiment, buys)
+
+
+def cmd_ideas(args, cfg: dict) -> None:
+    from rich.markdown import Markdown
+
+    from src.portfolio_analysis import ideas
+    from src.update_engine import report
+
+    snap = storage.load_latest_snapshot(Path(cfg["database"]))
+    if snap is None:
+        console.print("No snapshots yet. Run `python -m src.cli snapshot` first.")
+        return
+    today = date.today()
+    found = _ideas(snap, cfg, today)
+    if args.ticker:
+        wanted = {t.upper() for t in args.ticker}
+        found = [i for i in found if i.ticker in wanted]
+    markdown = ideas.render(found, snap, today)
+    console.print(Markdown(markdown))
+    if not args.ticker:
+        console.print(f"Saved {report.write_report('ideas', markdown, today)}")
+
+
 def cmd_notify(args, cfg: dict) -> None:
     from src.update_engine import alerts, notify
 
@@ -865,6 +908,10 @@ def main() -> None:
     call.add_argument("--quarter", help="e.g. 2026Q3 (default: the latest one available)")
     call.add_argument("--refresh", action="store_true", help="fetch again even if stored")
     call.set_defaults(func=cmd_earnings_call)
+
+    idea = sub.add_parser("ideas", help="add / hold / trim / sell ideas for your holdings")
+    idea.add_argument("ticker", nargs="*", help="only show these (default: all, and save)")
+    idea.set_defaults(func=cmd_ideas)
 
     run = sub.add_parser("run", help="snapshot, news, reports and alerts, then notify")
     run.add_argument("--force", action="store_true", help="run on weekends too")

@@ -6,7 +6,7 @@ from datetime import date
 from pathlib import Path
 
 REPORTS_DIR = Path(__file__).resolve().parents[2] / "reports"
-KINDS = ("daily", "weekly", "alerts")
+KINDS = ("daily", "weekly", "alerts", "ideas")
 
 
 def report_path(kind: str, day: date, root: Path = REPORTS_DIR) -> Path:
