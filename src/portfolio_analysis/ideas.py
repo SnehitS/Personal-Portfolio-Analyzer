@@ -35,6 +35,8 @@ DEFAULTS = {
     "insider_buy_min": 25_000,   # open-market insider buys this big count as +1
     "earnings_days": 7,          # earnings this close: note it, the move can swamp the idea
     "long_term_days": 45,        # gains lots turning long-term this soon: note it on trims
+    "cash_reserve": 0.05,        # keep this share of equity in cash when deploying the rest
+    "min_buy": 100,              # don't suggest buys smaller than this ($)
 }
 
 
@@ -175,6 +177,15 @@ def suggest(snap: PortfolioSnapshot, cfg: dict | None = None, today: date | None
     return sorted(ideas, key=lambda i: (order[i.action], -abs(i.score), -i.weight))
 
 
+def headline(ideas: list[Idea], plan: CashPlan | None = None) -> str:
+    """One line for notifications: the non-hold ideas and any cash buys."""
+    parts = [f"{a} {', '.join(i.ticker for i in ideas if i.action == a)}"
+             for a in ("sell", "trim", "add") if any(i.action == a for i in ideas)]
+    if plan and plan.buys:
+        parts.append("buy " + ", ".join(f"${v:,.0f} {t}" for t, v in plan.buys.items()))
+    return "Ideas: " + "; ".join(parts) if parts else ""
+
+
 def trim_amount(idea: Idea, snap: PortfolioSnapshot) -> float | None:
     """Dollars to sell to get an overweight position back to its target weight."""
     if idea.trim_to is None:
@@ -182,12 +193,78 @@ def trim_amount(idea: Idea, snap: PortfolioSnapshot) -> float | None:
     return max(0.0, (idea.weight - idea.trim_to) * snap.total_equity)
 
 
-def render(ideas: list[Idea], snap: PortfolioSnapshot, today: date) -> str:
+@dataclass
+class CashPlan:
+    investable: float                 # cash above the reserve
+    reserve: float                    # cash kept back
+    buys: dict[str, float] = field(default_factory=dict)   # ticker -> dollars, biggest first
+    capped: bool = False              # some cash had nowhere to go: every add hit its limit
+
+    @property
+    def leftover(self) -> float:
+        return self.investable - sum(self.buys.values())
+
+
+def deploy_cash(ideas: list[Idea], snap: PortfolioSnapshot, cfg: dict | None = None) -> CashPlan:
+    """Split cash above the reserve across the add ideas, in proportion to their scores.
+
+    No buy takes a position past the add ceiling (add_room x max_weight), and whatever a
+    capped position can't take goes to the others. Cash nothing can use is left over:
+    no add ideas means no buys, not a forced pick."""
+    c = {**DEFAULTS, **(cfg or {})}
+    equity = snap.total_equity
+    reserve = min(snap.account.cash, c["cash_reserve"] * equity)
+    plan = CashPlan(max(0.0, snap.account.cash - reserve), reserve)
+    ceiling = c["max_weight"] * c["add_room"] * equity
+    adds = [i for i in ideas if i.action == "add" and i.score > 0]
+    scores = {i.ticker: i.score for i in adds}
+    room = {i.ticker: max(0.0, ceiling - i.weight * equity) for i in adds}
+    alloc = {t: 0.0 for t in room}
+    left = plan.investable
+    while left > 0.01:
+        open_ = {t: scores[t] for t in room if room[t] - alloc[t] > 0.01}
+        if not open_:
+            plan.capped = bool(adds)
+            break
+        total = sum(open_.values())
+        spent = 0.0
+        for t, score in open_.items():
+            amount = min(left * score / total, room[t] - alloc[t])
+            alloc[t] += amount
+            spent += amount
+        left -= spent
+    for t, amount in sorted(alloc.items(), key=lambda kv: -kv[1]):
+        if amount >= c["min_buy"]:
+            plan.buys[t] = float(int(amount))   # whole dollars, rounded down
+    return plan
+
+
+def _cash_lines(plan: CashPlan) -> list[str]:
+    lines = ["## Cash", ""]
+    if plan.investable < 1:
+        return lines + [f"Nothing to deploy beyond the ${plan.reserve:,.0f} reserve.", ""]
+    lines.append(f"${plan.investable:,.0f} above the ${plan.reserve:,.0f} reserve.")
+    if plan.buys:
+        lines += ["", *(f"- Buy about **${amount:,.0f} of {t}**" for t, amount in plan.buys.items())]
+        if plan.capped:
+            lines += ["", f"${plan.leftover:,.0f} stays in cash: the add ideas are at their "
+                          f"size limit."]
+    else:
+        lines[-1] += (" The add ideas are at their size limit, so it stays in cash."
+                      if plan.capped else " No add ideas today, so it stays in cash.")
+    return lines + [""]
+
+
+def render(ideas: list[Idea], snap: PortfolioSnapshot, today: date,
+           plan: CashPlan | None = None) -> str:
     lines = [f"# Ideas: {today:%a %b %d, %Y}", "",
              "_Rules-based suggestions from stored data, not financial advice. "
              "Each reason shows the points it added._", ""]
     if not ideas:
-        return "\n".join(lines + ["No stock holdings to look at."]) + "\n"
+        lines += ["No stock holdings to look at.", ""]
+        if plan is not None:
+            lines += _cash_lines(plan)
+        return "\n".join(lines).rstrip() + "\n"
     for action, heading in (("sell", "Sell"), ("trim", "Trim"), ("add", "Add"), ("hold", "Hold")):
         mine = [i for i in ideas if i.action == action]
         if not mine:
@@ -208,4 +285,6 @@ def render(ideas: list[Idea], snap: PortfolioSnapshot, today: date) -> str:
                       *(f"  - {r}" for r in i.reasons),
                       *(f"  - _Note: {n}_" for n in i.notes)]
         lines.append("")
+    if plan is not None:
+        lines += _cash_lines(plan)
     return "\n".join(lines).rstrip() + "\n"

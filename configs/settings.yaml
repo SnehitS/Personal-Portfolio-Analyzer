@@ -79,6 +79,8 @@ ideas:                          # `ideas`: add / hold / trim / sell for your hol
   insider_buy_min: 25000        # ...if at least this big ($)
   earnings_days: 7              # note earnings this close
   long_term_days: 45            # note gains lots turning long-term this soon
+  cash_reserve: 0.05            # cash plan: keep 5% of equity in cash, split the rest across adds
+  min_buy: 100                  # skip suggested buys smaller than this ($)
 
 robinhood:
   session_days: 30              # how long a saved login is asked to last (Robinhood may cap it)
