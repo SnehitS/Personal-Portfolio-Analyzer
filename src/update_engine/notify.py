@@ -36,8 +36,11 @@ class Message:
 
 
 def compose(alerts: list[Alert], failures: list[str], cfg: dict | None = None,
-            summary: str = "") -> Message | None:
-    """The notification to send, or None when there's nothing worth interrupting you for."""
+            summary: str = "", ideas: str = "") -> Message | None:
+    """The notification to send, or None when there's nothing worth interrupting you for.
+
+    ideas: a one-line summary of the day's ideas. It rides along in a message that's being
+    sent anyway; a standing trim shouldn't ping you every day on its own."""
     c = {**DEFAULTS, **(cfg or {})}
     wanted = [a for a in alerts if a.level == "high" or c["min_level"] == "watch"]
     if not wanted and not failures and not c["always"]:
@@ -55,6 +58,7 @@ def compose(alerts: list[Alert], failures: list[str], cfg: dict | None = None,
     lines = [summary] if summary else []
     lines += [f"{'!' if a.level == 'high' else '-'} {a.message}" for a in wanted]
     lines += [f"x {f}" for f in failures]
+    lines += [ideas] if ideas else []
     return Message(title, "\n".join(lines) or "Nothing needs attention today.", urgent=high > 0)
 
 

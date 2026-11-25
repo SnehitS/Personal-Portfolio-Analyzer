@@ -626,7 +626,7 @@ def _wait_for_network(minutes: float, check=_online, sleep=None) -> bool:
 
 
 def cmd_run(args, cfg: dict) -> None:
-    """Snapshot, news, reports and alerts in one go, then notify. Built to run unattended:
+    """Snapshot, news, reports, alerts and ideas in one go, then notify. Built to run unattended:
     a step that fails is logged and reported, and the rest carry on with stored data."""
     import traceback
     from argparse import Namespace
@@ -670,10 +670,16 @@ def cmd_run(args, cfg: dict) -> None:
     if f"{today:%A}".lower() == weekly_day or args.weekly:
         step("weekly report", cmd_report, Namespace(kind="weekly", print=False))
     found = step("alerts", cmd_report, Namespace(kind="alerts", print=False)) or []
+    idea_line = ""
+    if not getattr(args, "no_ideas", False):
+        result = step("ideas", cmd_ideas, Namespace(ticker=[], print=False))
+        if result:
+            from src.portfolio_analysis import ideas
+            idea_line = ideas.headline(*result)
 
     snap = storage.load_latest_snapshot(Path(cfg["database"]))
     summary = _day_summary(snap) if snap and snap.taken_at.date() == today else ""
-    msg = notify.compose(found, failures, cfg.get("notify"), summary)
+    msg = notify.compose(found, failures, cfg.get("notify"), summary, idea_line)
     console.rule("notify")
     if msg is None or args.no_notify:
         console.print("Nothing to send." if msg is None else "Skipped (--no-notify).")
@@ -794,7 +800,7 @@ def _ideas(snap: PortfolioSnapshot, cfg: dict, today: date) -> list:
     from src.update_engine import extras
 
     db = Path(cfg["database"])
-    idea_cfg = {"max_weight": cfg["risk"]["max_position_weight"], **cfg.get("ideas", {})}
+    idea_cfg = _idea_cfg(cfg)
     tickers = [h.ticker for h in snap.holdings]
     since = datetime.now(timezone.utc) - timedelta(hours=idea_cfg.get("news_hours", 72))
     reads = aggregate.best_reads(storage.load_news(tickers, since, db),
@@ -808,7 +814,13 @@ def _ideas(snap: PortfolioSnapshot, cfg: dict, today: date) -> list:
     return ideas.suggest(snap, idea_cfg, today, sentiment, buys)
 
 
-def cmd_ideas(args, cfg: dict) -> None:
+def _idea_cfg(cfg: dict) -> dict:
+    return {"max_weight": cfg["risk"]["max_position_weight"], **cfg.get("ideas", {})}
+
+
+def cmd_ideas(args, cfg: dict):
+    """Print the ideas and, for the whole portfolio, save them with a cash plan.
+    Returns (ideas, cash plan) so `run` can put them in the notification."""
     from rich.markdown import Markdown
 
     from src.portfolio_analysis import ideas
@@ -817,16 +829,21 @@ def cmd_ideas(args, cfg: dict) -> None:
     snap = storage.load_latest_snapshot(Path(cfg["database"]))
     if snap is None:
         console.print("No snapshots yet. Run `python -m src.cli snapshot` first.")
-        return
+        return None
     today = date.today()
     found = _ideas(snap, cfg, today)
+    plan = None
     if args.ticker:
         wanted = {t.upper() for t in args.ticker}
         found = [i for i in found if i.ticker in wanted]
-    markdown = ideas.render(found, snap, today)
-    console.print(Markdown(markdown))
+    else:
+        plan = ideas.deploy_cash(found, snap, _idea_cfg(cfg))
+    markdown = ideas.render(found, snap, today, plan)
+    if getattr(args, "print", True):
+        console.print(Markdown(markdown))
     if not args.ticker:
         console.print(f"Saved {report.write_report('ideas', markdown, today)}")
+    return found, plan
 
 
 def cmd_notify(args, cfg: dict) -> None:
@@ -913,11 +930,12 @@ def main() -> None:
     idea.add_argument("ticker", nargs="*", help="only show these (default: all, and save)")
     idea.set_defaults(func=cmd_ideas)
 
-    run = sub.add_parser("run", help="snapshot, news, reports and alerts, then notify")
+    run = sub.add_parser("run", help="snapshot, news, reports, alerts and ideas, then notify")
     run.add_argument("--force", action="store_true", help="run on weekends too")
     run.add_argument("--weekly", action="store_true", help="write the weekly report today")
     run.add_argument("--no-snapshot", action="store_true", help="skip the Robinhood pull")
     run.add_argument("--no-news", action="store_true", help="skip fetching news")
+    run.add_argument("--no-ideas", action="store_true", help="skip the ideas report")
     run.add_argument("--no-notify", action="store_true", help="don't send notifications")
     run.set_defaults(func=cmd_run)
 
