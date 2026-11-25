@@ -247,6 +247,8 @@ def test_notify_compose():
     assert only_high.title == "Portfolio: 1 high alert" and "TINY" not in only_high.body
 
     assert notify.compose([], [], {}) is None
+    assert notify.compose([], [], {}, ideas="Ideas: trim BIG") is None   # never sends alone
+    assert notify.compose(found, [], {}, ideas="Ideas: trim BIG").body.endswith("Ideas: trim BIG")
     assert notify.compose([], [], {"always": True}).title == "Portfolio: all clear"
     broke = notify.compose([], ["snapshot failed: login"], {})
     assert broke.title == "Portfolio: run had problems" and "x snapshot failed: login" in broke.body
@@ -296,6 +298,29 @@ def test_run_keeps_going_after_a_failed_step(monkeypatch, tmp_path):
     assert calls == ["snapshot", "news", "daily", "weekly", "alerts"]   # Nov 13 2026 is a Friday
     assert sent and sent[0].title == "Portfolio: run had problems"
     assert "snapshot failed: no MFA code" in sent[0].body
+
+
+def test_run_puts_ideas_in_the_notification(monkeypatch, tmp_path):
+    from argparse import Namespace
+
+    from src import cli
+    from src.portfolio_analysis import ideas
+    from src.update_engine import notify
+    from src.update_engine.alerts import Alert
+
+    sent = []
+    alert = [Alert("high", "BIG", "move", "BIG down 6.0% today")]
+    monkeypatch.setattr(cli, "cmd_snapshot", lambda a, c: None)
+    monkeypatch.setattr(cli, "cmd_report", lambda a, c: alert if a.kind == "alerts" else None)
+    monkeypatch.setattr(cli, "cmd_ideas",
+                        lambda a, c: ([ideas.Idea("BIG", "trim", -2, 0.3)], None))
+    monkeypatch.setattr(cli.storage, "load_latest_snapshot", lambda db: None)
+    monkeypatch.setattr(notify, "send", lambda m, c: sent.append(m) or {"desktop": "sent"})
+    monkeypatch.setattr(cli, "date", type("D", (), {"today": staticmethod(lambda: date(2026, 11, 12))}))
+
+    cli.cmd_run(Namespace(force=False, weekly=False, no_snapshot=False, no_news=True,
+                          no_ideas=False, no_notify=False), {"database": str(tmp_path / "x.db")})
+    assert sent[0].body.splitlines()[-1] == "Ideas: trim BIG"
 
 
 def test_run_skips_weekends(monkeypatch):

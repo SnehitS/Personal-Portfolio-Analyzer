@@ -121,3 +121,53 @@ def test_render_groups_by_action():
     assert "sell about $1,500 to get back to 25%" in md
     assert "+1 uptrend" in md
     assert "not financial advice" in md
+
+
+def _add(ticker, score, weight):
+    return ideas.Idea(ticker, "add", score, weight)
+
+
+def test_cash_goes_to_adds_in_proportion_to_score():
+    snap = _snap(_h("AAA"), _h("BBB"), cash=8_000)   # equity 10,000; 500 reserve
+    plan = ideas.deploy_cash([_add("AAA", 3, 0.1), _add("BBB", 2, 0.1),
+                              ideas.Idea("CCC", "hold", 0, 0.1)], snap, {"max_weight": 1.0})
+    assert plan.reserve == 500 and plan.investable == 7_500
+    assert plan.buys == {"AAA": 4_500, "BBB": 3_000}
+    assert not plan.capped
+
+
+def test_capped_adds_pass_cash_to_the_others():
+    snap = _snap(_h("AAA"), _h("BBB"), cash=8_000)
+    # ceiling 0.25 * 0.8 * 10,000 = 2,000 per position; each already holds 1,000
+    plan = ideas.deploy_cash([_add("AAA", 3, 0.1), _add("BBB", 1, 0.0)], snap,
+                             {"max_weight": 0.25})
+    assert plan.buys == {"BBB": 2_000, "AAA": 1_000}
+    assert plan.capped and plan.leftover == pytest.approx(4_500)
+
+
+def test_no_adds_means_no_buys():
+    snap = _snap(_h("AAA"), cash=9_000)
+    plan = ideas.deploy_cash([ideas.Idea("AAA", "hold", 0, 0.1)], snap)
+    assert plan.buys == {} and not plan.capped
+    assert "No add ideas today" in ideas.render([], snap, TODAY, plan)
+
+
+def test_small_buys_and_reserve_only_cash_are_skipped():
+    snap = _snap(_h("AAA"), _h("BBB"), cash=1_000)   # equity 3,000; reserve 150
+    plan = ideas.deploy_cash([_add("AAA", 10, 0.1), _add("BBB", 0.5, 0.1)], snap,
+                             {"max_weight": 1.0, "min_buy": 100})
+    assert list(plan.buys) == ["AAA"]                # BBB's ~$40 share is too small
+    tiny = ideas.deploy_cash([_add("AAA", 2, 0.1)], _snap(_h("AAA"), cash=40))
+    assert tiny.investable == 0 and tiny.buys == {}
+    assert "Nothing to deploy" in ideas.render([], _snap(_h("AAA"), cash=40), TODAY, tiny)
+
+
+def test_render_and_headline_show_the_cash_plan():
+    snap = _snap(_h("BIG", qty=40), _h("ADD", **UP, **TARGET_UP), cash=5_000)
+    found = ideas.suggest(snap, {"max_weight": 0.25}, TODAY)
+    plan = ideas.deploy_cash(found, snap, {"max_weight": 0.25})
+    md = ideas.render(found, snap, TODAY, plan)
+    assert "## Cash" in md and "of ADD**" in md
+    line = ideas.headline(found, plan)
+    assert line.startswith("Ideas: trim BIG; add ADD; buy $") and line.endswith(" ADD")
+    assert ideas.headline([ideas.Idea("X", "hold", 0, 0.1)]) == ""
