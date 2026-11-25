@@ -150,7 +150,7 @@ python -m src.cli macro                  # 10-year yield, Fed funds, CPI inflati
 
 ### Running it on a schedule
 
-`run` does the whole day in one go: snapshot, news, Alpha Vantage extras, the daily report, the weekly report on Fridays, and alerts. Then it sends a notification. If a step fails, the error is logged and the remaining steps carry on with stored data. The failure is included in the notification, and the command exits with code 1. It does nothing on weekends unless you pass `--force`.
+`run` does the whole day in one go: snapshot, news, Alpha Vantage extras, the daily report, the weekly report on Fridays, alerts and ideas. Then it sends a notification. When a notification goes out, its last line sums up the ideas (for example `Ideas: trim BIG; add TSM; buy $275 TSM`). Ideas never send one on their own: a trim that stands for weeks would otherwise ping you every day. Pass `--no-ideas` to skip them. If a step fails, the error is logged and the remaining steps carry on with stored data. The failure is included in the notification, and the command exits with code 1. It does nothing on weekends unless you pass `--force`.
 
 ```bash
 python -m src.cli run                    # what the scheduled job runs
@@ -201,5 +201,9 @@ Some things are deliberately left out of the score:
 
 Analyst targets lag the price. After a sharp selloff every holding can look 50%+ below target, and that signal stops telling holdings apart. Thresholds are under `ideas` in settings. ETFs are skipped.
 
+### Cash
+
+The saved report ends with a cash plan. It keeps `ideas.cash_reserve` (5% of equity) in cash and splits the rest across the add ideas in proportion to their scores. No buy takes a position past the add ceiling (80% of the size limit). Cash a capped position can't take goes to the other adds, and anything left after that stays in cash. Buys under `ideas.min_buy` ($100) are dropped, and amounts are rounded down to whole dollars. With no add ideas the cash stays put; the plan won't force a pick. Proceeds from trims and sells aren't counted, so sell first and the next run plans that cash. `ideas TICKER ...` leaves the cash plan out.
+
 ## Roadmap
-- **Stage 4, next:** cash deployment, new long/short ideas from a watchlist, options ideas (covered calls, cash-secured puts), and later prediction markets.
+- **Stage 4, next:** new long/short ideas from a watchlist, options ideas (covered calls, cash-secured puts), and later prediction markets.
