@@ -837,21 +837,62 @@ def _candidates(tickers: list[str], cfg: dict) -> list[Holding]:
     return found
 
 
-def _watch_ideas(tickers: list[str], snap: PortfolioSnapshot, cfg: dict, today: date) -> list:
+def _watch_ideas(tickers: list[str], snap: PortfolioSnapshot, cfg: dict,
+                 today: date) -> tuple[list, list[Holding]]:
+    """Watchlist ideas, plus the looked-up tickers they came from."""
     from src.portfolio_analysis import ideas
 
     held = {h.ticker for h in snap.holdings}
     tickers = [t for t in dict.fromkeys(tickers) if t not in held]
     if not tickers:
-        return []
+        return [], []
     with console.status(f"Looking up {len(tickers)} watchlist tickers..."):
         candidates = _candidates(tickers, cfg)
     sentiment, buys = _signal_inputs(tickers, cfg, today)
-    return ideas.watchlist(candidates, snap, _idea_cfg(cfg), today, sentiment, buys)
+    return ideas.watchlist(candidates, snap, _idea_cfg(cfg), today, sentiment, buys), candidates
 
 
 def _idea_cfg(cfg: dict) -> dict:
     return {"max_weight": cfg["risk"]["max_position_weight"], **cfg.get("ideas", {})}
+
+
+def _options_section(found: list, watch: list, candidates: list[Holding],
+                     snap: PortfolioSnapshot, cash: float, cfg: dict, today: date) -> str:
+    """Covered calls and cash-secured puts for the day's ideas, as a report section."""
+    from src.data_pipeline import options_data
+    from src.portfolio_analysis import option_ideas
+    from src.portfolio_analysis.options import expiry_view, iv_rank
+
+    db = Path(cfg["database"])
+    opt_cfg = cfg.get("option_ideas") or {}
+    ranks: dict[str, float] = {}
+
+    def chain_for(ticker: str, earnings: date | None):
+        chain = options_data.chain_near(ticker, earnings, opt_cfg, today)
+        if chain is not None:
+            view = expiry_view(chain.calls, chain.puts, chain.spot, chain.expiration, today)
+            history = storage.load_iv_history(ticker, today - timedelta(days=365), db)
+            rank = iv_rank(view.atm_iv if view else None, history)
+            if rank is not None:
+                ranks[ticker] = rank
+        return chain
+
+    with console.status("Option chains for covered calls and puts..."):
+        calls = option_ideas.covered_calls(snap, found, chain_for, opt_cfg, today, ranks)
+        info = {h.ticker: h for h in snap.holdings + candidates}
+        puts, too_big = option_ideas.cash_secured_puts(
+            snap, found + watch, info, cash, chain_for, opt_cfg, today, ranks,
+            cfg["risk"]["max_position_weight"])
+    return option_ideas.render(calls, puts, too_big)
+
+
+def _safe_section(name: str, build) -> str:
+    """A report section that can't take the rest of the report down with it."""
+    try:
+        return build()
+    except Exception as e:  # noqa: BLE001 - network and data errors from third parties
+        console.print(f"[red]{name} failed:[/red] {e!r}")
+        return f"## {name}\n\n_Couldn't build this section: {e}_\n"
 
 
 def cmd_ideas(args, cfg: dict):
@@ -871,20 +912,23 @@ def cmd_ideas(args, cfg: dict):
         return None
     today = date.today()
     found = _ideas(snap, cfg, today)
-    plan = None
     if args.ticker:
         wanted = [t.upper() for t in args.ticker]
         found = [i for i in found if i.ticker in wanted]
-        watch = _watch_ideas(wanted, snap, cfg, today) or None
-    else:
-        watch = _watch_ideas(_watchlist_tickers(cfg), snap, cfg, today)
-        plan = ideas.deploy_cash(found + watch, snap, _idea_cfg(cfg))
-    markdown = ideas.render(found, snap, today, plan, watch)
+    watch, candidates = _watch_ideas(wanted if args.ticker else _watchlist_tickers(cfg),
+                                     snap, cfg, today)
+    plan = ideas.deploy_cash(found + watch, snap, _idea_cfg(cfg))
+    sections = []
+    if not getattr(args, "no_options", False):
+        sections.append(_safe_section("Options", lambda: _options_section(
+            found, watch, candidates, snap, plan.investable, cfg, today)))
+    markdown = ideas.render(found, snap, today, None if args.ticker else plan,
+                            watch or (None if args.ticker else []), sections)
     if getattr(args, "print", True):
         console.print(Markdown(markdown))
     if not args.ticker:
         console.print(f"Saved {report.write_report('ideas', markdown, today)}")
-    return found + (watch or []), plan
+    return found + watch, None if args.ticker else plan
 
 
 def cmd_notify(args, cfg: dict) -> None:
@@ -969,6 +1013,7 @@ def main() -> None:
 
     idea = sub.add_parser("ideas", help="add / hold / trim / sell ideas for your holdings")
     idea.add_argument("ticker", nargs="*", help="only show these (default: all, and save)")
+    idea.add_argument("--no-options", action="store_true", help="skip covered calls and puts")
     idea.set_defaults(func=cmd_ideas)
 
     run = sub.add_parser("run", help="snapshot, news, reports, alerts and ideas, then notify")

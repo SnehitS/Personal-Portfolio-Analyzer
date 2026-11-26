@@ -85,6 +85,17 @@ ideas:                          # `ideas`: add / hold / trim / sell for your hol
   short_score: -2.0             # ...or a short
   start_weight: 0.03            # a new long starts at up to 3% of equity
 
+option_ideas:                   # covered calls and cash-secured puts in `ideas`
+  call_delta: 0.25              # covered calls: about a 1 in 4 chance of being called away
+  put_delta: 0.30               # puts: about a 3 in 10 chance of buying the stock
+  target_days: 30               # expiry about a month out...
+  min_days: 21
+  max_days: 50                  # ...ending before earnings when the chain allows it
+  min_yield: 0.05               # skip premiums under 5% a year
+  rate: 0.04                    # risk-free rate for delta
+  call_on: [hold, trim]         # holding ideas that get covered calls (never adds)
+  low_iv_rank: 0.30             # note when IV is in the bottom 30% of its stored range
+
 watchlist:                      # tickers you don't own, scored by `ideas` like your holdings
   tickers: []                   # e.g. [MSFT, AMD, COST]
   news: true                    # fetch and score their news in `news` and `run` too
