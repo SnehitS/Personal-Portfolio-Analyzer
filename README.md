@@ -210,5 +210,14 @@ List tickers you don't own under `watchlist.tickers` in settings. Each one is lo
 
 The saved report ends with a cash plan. It keeps `ideas.cash_reserve` (5% of equity) in cash and splits the rest across the add ideas and new longs in proportion to their scores. No buy takes a position past the add ceiling (80% of the size limit), and a new long starts at no more than `ideas.start_weight` (3% of equity). Cash a capped position can't take goes to the other adds, and anything left after that stays in cash. Buys under `ideas.min_buy` ($100) are dropped, and amounts are rounded down to whole dollars. With no add ideas the cash stays put; the plan won't force a pick. Proceeds from trims and sells aren't counted, so sell first and the next run plans that cash. `ideas TICKER ...` leaves the cash plan out.
 
+### Options
+
+After the cash plan, the report suggests options that fit the stock ideas. Prices come from yfinance chains at mid. The strike is picked by delta (Black-Scholes on each contract's own IV), which is roughly the chance the option ends in the money. The expiry is about a month out (21–50 days), ending before the next earnings when the chain allows it.
+
+- **Covered calls** go on hold and trim ideas with at least 100 shares not already covered by a short call, at about 25 delta. Never on adds: you want more of those, so capping the upside works against you. Notes cover earnings before expiry, shares that would still be short-term if called away, and low IV rank (from the history `options` stores).
+- **Cash-secured puts** go on adds and new longs at about 30 delta, one contract each, when the cash above the reserve covers the collateral. A put's note gives the net price if you're assigned, and whether assignment would take the position over the size limit. When the collateral is more than your cash, the report says so instead of leaving the idea out. Each put uses the same cash the plan would spend, so do one or the other.
+
+Premiums under 5% a year are skipped. Settings are under `option_ideas`, and `ideas --no-options` skips the chain lookups.
+
 ## Roadmap
 - **Stage 4, next:** new long/short ideas from a watchlist, options ideas (covered calls, cash-secured puts), and later prediction markets.
