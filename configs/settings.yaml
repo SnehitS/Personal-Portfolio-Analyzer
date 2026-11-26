@@ -81,6 +81,13 @@ ideas:                          # `ideas`: add / hold / trim / sell for your hol
   long_term_days: 45            # note gains lots turning long-term this soon
   cash_reserve: 0.05            # cash plan: keep 5% of equity in cash, split the rest across adds
   min_buy: 100                  # skip suggested buys smaller than this ($)
+  buy_score: 2.0                # watchlist: points needed for a new long...
+  short_score: -2.0             # ...or a short
+  start_weight: 0.03            # a new long starts at up to 3% of equity
+
+watchlist:                      # tickers you don't own, scored by `ideas` like your holdings
+  tickers: []                   # e.g. [MSFT, AMD, COST]
+  news: true                    # fetch and score their news in `news` and `run` too
 
 robinhood:
   session_days: 30              # how long a saved login is asked to last (Robinhood may cap it)

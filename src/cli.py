@@ -13,7 +13,7 @@
     python -m src.cli insiders                    # notable insider buying and selling
     python -m src.cli macro                       # rates and inflation backdrop
     python -m src.cli earnings-call NFLX          # summary of the latest earnings call
-    python -m src.cli ideas                       # add / hold / trim / sell ideas
+    python -m src.cli ideas                       # add / hold / trim / sell, watchlist, cash plan
     python -m src.cli run                         # all of the above, then notify (for the scheduler)
     python -m src.cli notify --test               # check your notification channels
 """
@@ -350,6 +350,8 @@ def cmd_news(args, cfg: dict) -> None:
 
     snap = storage.load_latest_snapshot(Path(cfg["database"]))
     tickers = [t.upper() for t in args.tickers] or _portfolio_tickers(cfg)
+    if not args.tickers and (cfg.get("watchlist") or {}).get("news", True):
+        tickers += [t for t in _watchlist_tickers(cfg) if t not in tickers]
     if not tickers:
         console.print("No tickers given and no snapshot yet. Try `news AAPL` or run `snapshot`.")
         return
@@ -793,25 +795,59 @@ def cmd_earnings_call(args, cfg: dict) -> None:
                            + (r["summary"] or "_No summary: set ANTHROPIC_API_KEY._")))
 
 
-def _ideas(snap: PortfolioSnapshot, cfg: dict, today: date) -> list:
-    """Ideas for the snapshot's holdings from stored news sentiment and insider buys."""
-    from src.portfolio_analysis import ideas
+def _signal_inputs(tickers: list[str], cfg: dict, today: date) -> tuple[list, list]:
+    """Stored news sentiment and open-market insider buys for these tickers."""
+    from src.portfolio_analysis.insiders import combine
     from src.sentiment_pipeline import aggregate
-    from src.update_engine import extras
 
     db = Path(cfg["database"])
     idea_cfg = _idea_cfg(cfg)
-    tickers = [h.ticker for h in snap.holdings]
     since = datetime.now(timezone.utc) - timedelta(hours=idea_cfg.get("news_hours", 72))
     reads = aggregate.best_reads(storage.load_news(tickers, since, db),
                                  storage.load_sentiment(tickers, db_path=db))
     half_life = cfg.get("sentiment", {}).get("half_life_hours", 48)
     sentiment = [aggregate.summarize(reads, t, half_life) for t in tickers]
-    from src.portfolio_analysis.insiders import combine
     buys = combine(storage.load_insider_trades(
-        extras.stock_tickers(snap), today - timedelta(days=idea_cfg.get("insider_days", 90)),
-        db_path=db))
-    return ideas.suggest(snap, idea_cfg, today, sentiment, buys)
+        tickers, today - timedelta(days=idea_cfg.get("insider_days", 90)), db_path=db))
+    return sentiment, buys
+
+
+def _ideas(snap: PortfolioSnapshot, cfg: dict, today: date) -> list:
+    """Ideas for the snapshot's holdings from stored news sentiment and insider buys."""
+    from src.portfolio_analysis import ideas
+    from src.update_engine import extras
+
+    sentiment, _ = _signal_inputs([h.ticker for h in snap.holdings], cfg, today)
+    _, buys = _signal_inputs(extras.stock_tickers(snap), cfg, today)
+    return ideas.suggest(snap, _idea_cfg(cfg), today, sentiment, buys)
+
+
+def _watchlist_tickers(cfg: dict) -> list[str]:
+    return [t.upper() for t in (cfg.get("watchlist") or {}).get("tickers") or []]
+
+
+def _candidates(tickers: list[str], cfg: dict) -> list[Holding]:
+    """Tickers you don't own, filled in like holdings so they can be scored the same way."""
+    if not tickers:
+        return []
+    found = [Holding(t, 0, 0.0, 0.0) for t in tickers]
+    enrich_holdings(found)
+    bench = cfg["benchmarks"][0]
+    apply_price_stats(found, price_history(tickers + [bench]), bench)
+    return found
+
+
+def _watch_ideas(tickers: list[str], snap: PortfolioSnapshot, cfg: dict, today: date) -> list:
+    from src.portfolio_analysis import ideas
+
+    held = {h.ticker for h in snap.holdings}
+    tickers = [t for t in dict.fromkeys(tickers) if t not in held]
+    if not tickers:
+        return []
+    with console.status(f"Looking up {len(tickers)} watchlist tickers..."):
+        candidates = _candidates(tickers, cfg)
+    sentiment, buys = _signal_inputs(tickers, cfg, today)
+    return ideas.watchlist(candidates, snap, _idea_cfg(cfg), today, sentiment, buys)
 
 
 def _idea_cfg(cfg: dict) -> dict:
@@ -820,7 +856,10 @@ def _idea_cfg(cfg: dict) -> dict:
 
 def cmd_ideas(args, cfg: dict):
     """Print the ideas and, for the whole portfolio, save them with a cash plan.
-    Returns (ideas, cash plan) so `run` can put them in the notification."""
+    Returns (holding and watchlist ideas, cash plan) so `run` can put them in the
+    notification.
+
+    With tickers, held ones are filtered and the rest are scored like watchlist tickers."""
     from rich.markdown import Markdown
 
     from src.portfolio_analysis import ideas
@@ -834,16 +873,18 @@ def cmd_ideas(args, cfg: dict):
     found = _ideas(snap, cfg, today)
     plan = None
     if args.ticker:
-        wanted = {t.upper() for t in args.ticker}
+        wanted = [t.upper() for t in args.ticker]
         found = [i for i in found if i.ticker in wanted]
+        watch = _watch_ideas(wanted, snap, cfg, today) or None
     else:
-        plan = ideas.deploy_cash(found, snap, _idea_cfg(cfg))
-    markdown = ideas.render(found, snap, today, plan)
+        watch = _watch_ideas(_watchlist_tickers(cfg), snap, cfg, today)
+        plan = ideas.deploy_cash(found + watch, snap, _idea_cfg(cfg))
+    markdown = ideas.render(found, snap, today, plan, watch)
     if getattr(args, "print", True):
         console.print(Markdown(markdown))
     if not args.ticker:
         console.print(f"Saved {report.write_report('ideas', markdown, today)}")
-    return found, plan
+    return found + (watch or []), plan
 
 
 def cmd_notify(args, cfg: dict) -> None:
