@@ -175,12 +175,13 @@ The task only runs while you're logged in. If the PC was asleep at the scheduled
 
 Nothing is sent on a quiet day unless `notify.always` is true. Set `notify.min_level: high` to only hear about alerts in large positions.
 
-## Stage 4: Ideas (in progress)
+## Stage 4: Ideas (done)
 
 ```bash
 python -m src.cli ideas             # every stock holding, saved to reports/ideas/
 python -m src.cli ideas TSM INTC    # just these, not saved
 python -m src.cli ideas MSFT        # a ticker you don't own is scored like a watchlist one
+python -m src.cli odds              # prediction market odds on rates, inflation and recession
 ```
 
 Each holding gets **add**, **hold**, **trim** or **sell** from a points score, with every reason listed next to the points it added:
@@ -219,5 +220,14 @@ After the cash plan, the report suggests options that fit the stock ideas. Price
 
 Premiums under 5% a year are skipped. Settings are under `option_ideas`, and `ideas --no-options` skips the chain lookups.
 
+### Market odds
+
+The report ends with what prediction markets expect for the macro events that move stocks, from Kalshi's public market data (no account or key). By default it covers the next two Fed decisions, CPI, the unemployment rate, and recession. Add any Kalshi series ticker under `odds.series`. Each contract's price is read as a probability, using the bid/ask midpoint, or the last trade when the spread is wider than 20 cents.
+
+- **Pick-one events** (the Fed cuts, holds or hikes) list every outcome at 5% or more.
+- **Ladders** ("CPI above 3.4%?", at several strikes) are turned into the market's median and 80% range by finding where the odds cross 50%, 90% and 10%.
+
+Each day's odds are stored, and the report notes moves of 5+ points since about a week ago (`odds.compare_days`). For ladders, a moved median. These are context, not a score signal: nothing in the ideas above changes with them. `ideas --no-odds` skips them.
+
 ## Roadmap
-- **Stage 4, next:** new long/short ideas from a watchlist, options ideas (covered calls, cash-secured puts), and later prediction markets.
+- Stages 1–4 are done. Ideas for later: score signals from the market odds (say, rate-sensitive holdings when a hike gets likelier), and options ideas for the shorts (buying puts).
