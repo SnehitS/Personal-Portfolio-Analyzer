@@ -171,3 +171,35 @@ def test_render_and_headline_show_the_cash_plan():
     line = ideas.headline(found, plan)
     assert line.startswith("Ideas: trim BIG; add ADD; buy $") and line.endswith(" ADD")
     assert ideas.headline([ideas.Idea("X", "hold", 0, 0.1)]) == ""
+
+
+def test_watchlist_scores_tickers_you_dont_own():
+    snap = _snap(_h("OWN", **UP, **TARGET_UP), cash=10_000)
+    candidates = [_h("OWN", qty=0, **UP, **TARGET_UP), _h("LONG", qty=0, **UP, **TARGET_UP),
+                  _h("SHRT", qty=0, **DOWN, **TARGET_DOWN), _h("MEH", qty=0),
+                  _h("FUND", qty=0, sector="ETF", **UP, **TARGET_UP),
+                  _h("NOPRICE", qty=0, price=0.0)]
+    found = _by(ideas.watchlist(candidates, snap, {"start_weight": 0.03}, TODAY))
+    assert set(found) == {"LONG", "SHRT", "MEH"}       # held, ETFs and unpriced are skipped
+    assert found["LONG"].action == "buy" and found["LONG"].cap == 0.03
+    assert found["SHRT"].action == "short"
+    assert any("Robinhood doesn't let you short" in n for n in found["SHRT"].notes)
+    assert found["MEH"].action == "watch"
+
+
+def test_new_longs_get_a_starter_size_in_the_cash_plan():
+    snap = _snap(_h("AAA"), cash=9_000)                # equity 10,000; 500 reserve
+    new = ideas.Idea("NEW", "buy", 2, 0.0, cap=0.03)
+    plan = ideas.deploy_cash([_add("AAA", 2, 0.1), new], snap, {"max_weight": 1.0})
+    assert plan.buys["NEW"] == 300                     # 3% of 10,000
+    assert plan.buys["AAA"] == 7_000                   # 80% ceiling: 8,000 less the 1,000 held
+    assert plan.capped
+    md = ideas.render([], snap, TODAY, plan, [new])
+    assert "### New longs" in md and "start at up to 3%" in md
+    assert "$300 of NEW** (new position)" in md
+    assert ideas.headline([new], plan).startswith("Ideas: new NEW; buy ")
+
+
+def test_render_says_how_to_fill_an_empty_watchlist():
+    md = ideas.render([], _snap(cash=100), TODAY, watch=[])
+    assert "## Watchlist" in md and "under `watchlist`" in md
