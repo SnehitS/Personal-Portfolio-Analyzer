@@ -180,6 +180,7 @@ Nothing is sent on a quiet day unless `notify.always` is true. Set `notify.min_l
 ```bash
 python -m src.cli ideas             # every stock holding, saved to reports/ideas/
 python -m src.cli ideas TSM INTC    # just these, not saved
+python -m src.cli ideas MSFT        # a ticker you don't own is scored like a watchlist one
 ```
 
 Each holding gets **add**, **hold**, **trim** or **sell** from a points score, with every reason listed next to the points it added:
@@ -201,9 +202,13 @@ Some things are deliberately left out of the score:
 
 Analyst targets lag the price. After a sharp selloff every holding can look 50%+ below target, and that signal stops telling holdings apart. Thresholds are under `ideas` in settings. ETFs are skipped.
 
+### Watchlist
+
+List tickers you don't own under `watchlist.tickers` in settings. Each one is looked up on yfinance and scored with the same points as a holding. A score of 2 or more is a **new long** (`ideas.buy_score`), -2 or less a **short** (`ideas.short_score`), and anything in between stays on the watchlist. Robinhood doesn't let you short stock, so a short is a note that a put is the way to act on it. With `watchlist.news` on, `news` and `run` fetch and score their headlines too. Insider buys rarely count for them: `run` only fetches insider trades for holdings, to stay within Alpha Vantage's daily limit.
+
 ### Cash
 
-The saved report ends with a cash plan. It keeps `ideas.cash_reserve` (5% of equity) in cash and splits the rest across the add ideas in proportion to their scores. No buy takes a position past the add ceiling (80% of the size limit). Cash a capped position can't take goes to the other adds, and anything left after that stays in cash. Buys under `ideas.min_buy` ($100) are dropped, and amounts are rounded down to whole dollars. With no add ideas the cash stays put; the plan won't force a pick. Proceeds from trims and sells aren't counted, so sell first and the next run plans that cash. `ideas TICKER ...` leaves the cash plan out.
+The saved report ends with a cash plan. It keeps `ideas.cash_reserve` (5% of equity) in cash and splits the rest across the add ideas and new longs in proportion to their scores. No buy takes a position past the add ceiling (80% of the size limit), and a new long starts at no more than `ideas.start_weight` (3% of equity). Cash a capped position can't take goes to the other adds, and anything left after that stays in cash. Buys under `ideas.min_buy` ($100) are dropped, and amounts are rounded down to whole dollars. With no add ideas the cash stays put; the plan won't force a pick. Proceeds from trims and sells aren't counted, so sell first and the next run plans that cash. `ideas TICKER ...` leaves the cash plan out.
 
 ## Roadmap
 - **Stage 4, next:** new long/short ideas from a watchlist, options ideas (covered calls, cash-secured puts), and later prediction markets.
