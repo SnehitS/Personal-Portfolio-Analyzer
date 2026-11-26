@@ -18,7 +18,8 @@ from src.data_pipeline.models import Holding, InsiderTrade, PortfolioSnapshot
 from src.portfolio_analysis.metrics import Lot, fifo_lots, lot_mismatches, weights
 from src.sentiment_pipeline.aggregate import TickerSentiment
 
-ACTIONS = ("add", "hold", "trim", "sell")
+ACTIONS = ("add", "hold", "trim", "sell")     # holdings
+WATCH_ACTIONS = ("buy", "short", "watch")      # watchlist tickers you don't own
 
 DEFAULTS = {
     "add_score": 2.0,            # total at or above this: add
@@ -37,6 +38,9 @@ DEFAULTS = {
     "long_term_days": 45,        # gains lots turning long-term this soon: note it on trims
     "cash_reserve": 0.05,        # keep this share of equity in cash when deploying the rest
     "min_buy": 100,              # don't suggest buys smaller than this ($)
+    "buy_score": 2.0,            # watchlist: points needed to open a new long...
+    "short_score": -2.0,         # ...or to call it a short
+    "start_weight": 0.03,        # a new long starts at this share of equity, at most
 }
 
 
@@ -55,6 +59,7 @@ class Idea:
     signals: list[Signal] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     trim_to: float | None = None  # target weight when trimming for size
+    cap: float | None = None      # most this position should reach from new buys
 
     @property
     def reasons(self) -> list[str]:
@@ -100,6 +105,13 @@ def _signals(h: Holding, c: dict, sentiment: TickerSentiment | None,
         out.append(Signal(1, f"{who} bought ${total:,.0f} on the open market"))
 
     return out
+
+
+def _earnings_note(h: Holding, today: date, c: dict) -> list[str]:
+    if h.next_earnings and 0 <= (h.next_earnings - today).days <= c["earnings_days"]:
+        return [f"reports earnings {h.next_earnings:%a %b %d}; the move can outweigh "
+                f"everything above"]
+    return []
 
 
 def _tax_notes(h: Holding, lots: list[Lot], today: date, c: dict) -> list[str]:
@@ -162,9 +174,7 @@ def suggest(snap: PortfolioSnapshot, cfg: dict | None = None, today: date | None
             idea.notes.append(f"signals say add, but it's already {weight:.0%} of the "
                               f"portfolio (limit {c['max_weight']:.0%})")
 
-        if h.next_earnings and 0 <= (h.next_earnings - today).days <= c["earnings_days"]:
-            idea.notes.append(f"reports earnings {h.next_earnings:%a %b %d}; the move can "
-                              f"outweigh everything above")
+        idea.notes += _earnings_note(h, today, c)
         if idea.action in ("trim", "sell"):
             if h.ticker in unreliable:
                 idea.notes.append("trade history doesn't cover every share, so tax notes "
@@ -177,10 +187,42 @@ def suggest(snap: PortfolioSnapshot, cfg: dict | None = None, today: date | None
     return sorted(ideas, key=lambda i: (order[i.action], -abs(i.score), -i.weight))
 
 
+def watchlist(candidates: list[Holding], snap: PortfolioSnapshot, cfg: dict | None = None,
+              today: date | None = None, sentiment: list[TickerSentiment] | None = None,
+              insider_buys: list[InsiderTrade] | None = None) -> list[Idea]:
+    """Buy, short or watch for tickers you don't own, scored like holdings.
+
+    Tickers you already hold and ETFs are skipped. A buy is sized as a starter position
+    (start_weight), never past the add ceiling."""
+    c = {**DEFAULTS, **(cfg or {})}
+    today = today or date.today()
+    held = {h.ticker for h in snap.holdings}
+    by_ticker = {s.ticker: s for s in sentiment or []}
+    buys = [t for t in insider_buys or [] if t.code == "P"]
+    out = []
+    for h in candidates:
+        if h.ticker in held or h.sector == "ETF" or not h.price:
+            continue
+        signals = _signals(h, c, by_ticker.get(h.ticker), buys)
+        score = sum(s.points for s in signals)
+        action = ("buy" if score >= c["buy_score"] else
+                  "short" if score <= c["short_score"] else "watch")
+        idea = Idea(h.ticker, action, score, 0.0, signals,
+                    cap=min(c["start_weight"], c["max_weight"] * c["add_room"]))
+        idea.notes += _earnings_note(h, today, c)
+        if action == "short":
+            idea.notes.append("Robinhood doesn't let you short stock; a put is the way to act "
+                              "on this, and it can expire worthless")
+        out.append(idea)
+    order = {"buy": 0, "short": 1, "watch": 2}
+    return sorted(out, key=lambda i: (order[i.action], -abs(i.score)))
+
+
 def headline(ideas: list[Idea], plan: CashPlan | None = None) -> str:
     """One line for notifications: the non-hold ideas and any cash buys."""
-    parts = [f"{a} {', '.join(i.ticker for i in ideas if i.action == a)}"
-             for a in ("sell", "trim", "add") if any(i.action == a for i in ideas)]
+    names = {"sell": "sell", "trim": "trim", "add": "add", "buy": "new", "short": "short"}
+    parts = [f"{names[a]} {', '.join(i.ticker for i in ideas if i.action == a)}"
+             for a in names if any(i.action == a for i in ideas)]
     if plan and plan.buys:
         parts.append("buy " + ", ".join(f"${v:,.0f} {t}" for t, v in plan.buys.items()))
     return "Ideas: " + "; ".join(parts) if parts else ""
@@ -208,17 +250,19 @@ class CashPlan:
 def deploy_cash(ideas: list[Idea], snap: PortfolioSnapshot, cfg: dict | None = None) -> CashPlan:
     """Split cash above the reserve across the add ideas, in proportion to their scores.
 
-    No buy takes a position past the add ceiling (add_room x max_weight), and whatever a
-    capped position can't take goes to the others. Cash nothing can use is left over:
-    no add ideas means no buys, not a forced pick."""
+    Watchlist buys take part too. No buy takes a position past the add ceiling
+    (add_room x max_weight), or a new one past its starter size, and whatever a capped
+    position can't take goes to the others. Cash nothing can use is left over: no add
+    ideas means no buys, not a forced pick."""
     c = {**DEFAULTS, **(cfg or {})}
     equity = snap.total_equity
     reserve = min(snap.account.cash, c["cash_reserve"] * equity)
     plan = CashPlan(max(0.0, snap.account.cash - reserve), reserve)
     ceiling = c["max_weight"] * c["add_room"] * equity
-    adds = [i for i in ideas if i.action == "add" and i.score > 0]
+    adds = [i for i in ideas if i.action in ("add", "buy") and i.score > 0]
     scores = {i.ticker: i.score for i in adds}
-    room = {i.ticker: max(0.0, ceiling - i.weight * equity) for i in adds}
+    room = {i.ticker: max(0.0, (ceiling if i.cap is None else i.cap * equity) - i.weight * equity)
+            for i in adds}
     alloc = {t: 0.0 for t in room}
     left = plan.investable
     while left > 0.01:
@@ -239,32 +283,32 @@ def deploy_cash(ideas: list[Idea], snap: PortfolioSnapshot, cfg: dict | None = N
     return plan
 
 
-def _cash_lines(plan: CashPlan) -> list[str]:
+def _cash_lines(plan: CashPlan, new: set[str] = frozenset()) -> list[str]:
     lines = ["## Cash", ""]
     if plan.investable < 1:
         return lines + [f"Nothing to deploy beyond the ${plan.reserve:,.0f} reserve.", ""]
     lines.append(f"${plan.investable:,.0f} above the ${plan.reserve:,.0f} reserve.")
     if plan.buys:
-        lines += ["", *(f"- Buy about **${amount:,.0f} of {t}**" for t, amount in plan.buys.items())]
+        lines += ["", *(f"- Buy about **${amount:,.0f} of {t}**"
+                        + (" (new position)" if t in new else "")
+                        for t, amount in plan.buys.items())]
         if plan.capped:
-            lines += ["", f"${plan.leftover:,.0f} stays in cash: the add ideas are at their "
+            lines += ["", f"${plan.leftover:,.0f} stays in cash: the buy ideas are at their "
                           f"size limit."]
     else:
-        lines[-1] += (" The add ideas are at their size limit, so it stays in cash."
+        lines[-1] += (" The buy ideas are at their size limit, so it stays in cash."
                       if plan.capped else " No add ideas today, so it stays in cash.")
     return lines + [""]
 
 
-def render(ideas: list[Idea], snap: PortfolioSnapshot, today: date,
-           plan: CashPlan | None = None) -> str:
-    lines = [f"# Ideas: {today:%a %b %d, %Y}", "",
-             "_Rules-based suggestions from stored data, not financial advice. "
-             "Each reason shows the points it added._", ""]
+def _idea_lines(i: Idea, head: str) -> list[str]:
+    return [f"- {head}", *(f"  - {r}" for r in i.reasons), *(f"  - _Note: {n}_" for n in i.notes)]
+
+
+def _holding_lines(ideas: list[Idea], snap: PortfolioSnapshot) -> list[str]:
     if not ideas:
-        lines += ["No stock holdings to look at.", ""]
-        if plan is not None:
-            lines += _cash_lines(plan)
-        return "\n".join(lines).rstrip() + "\n"
+        return ["No stock holdings to look at.", ""]
+    lines = []
     for action, heading in (("sell", "Sell"), ("trim", "Trim"), ("add", "Add"), ("hold", "Hold")):
         mine = [i for i in ideas if i.action == action]
         if not mine:
@@ -281,10 +325,46 @@ def render(ideas: list[Idea], snap: PortfolioSnapshot, today: date,
             amount = trim_amount(i, snap)
             if amount:
                 head += f": sell about ${amount:,.0f} to get back to {i.trim_to:.0%}"
-            lines += [f"- {head}",
-                      *(f"  - {r}" for r in i.reasons),
-                      *(f"  - _Note: {n}_" for n in i.notes)]
+            lines += _idea_lines(i, head)
         lines.append("")
+    return lines
+
+
+def _watch_lines(watch: list[Idea]) -> list[str]:
+    lines = ["## Watchlist", ""]
+    if not watch:
+        return lines + ["Nothing to score: add tickers you don't own under `watchlist` "
+                        "in settings.", ""]
+    for action, heading in (("buy", "New longs"), ("short", "Shorts")):
+        mine = [i for i in watch if i.action == action]
+        if not mine:
+            continue
+        lines += [f"### {heading}", ""]
+        for i in mine:
+            head = f"**{i.ticker}** (score {i.score:+g})"
+            if action == "buy":
+                head += f": start at up to {i.cap:.0%} of the portfolio"
+            lines += _idea_lines(i, head)
+        lines.append("")
+    rest = [i for i in watch if i.action == "watch"]
+    if rest:
+        lines += ["Still watching: " + ", ".join(f"{i.ticker} ({i.score:+g})" for i in rest), ""]
+    return lines
+
+
+def render(ideas: list[Idea], snap: PortfolioSnapshot, today: date,
+           plan: CashPlan | None = None, watch: list[Idea] | None = None,
+           sections: list[str] | None = None) -> str:
+    """The ideas report. `watch` adds the watchlist and `sections` are extra markdown
+    blocks (options ideas, market odds) that go after the cash plan."""
+    lines = [f"# Ideas: {today:%a %b %d, %Y}", "",
+             "_Rules-based suggestions from stored data, not financial advice. "
+             "Each reason shows the points it added._", ""]
+    lines += _holding_lines(ideas, snap)
+    if watch is not None:
+        lines += _watch_lines(watch)
     if plan is not None:
-        lines += _cash_lines(plan)
+        lines += _cash_lines(plan, {i.ticker for i in watch or []})
+    for block in sections or []:
+        lines += [block.rstrip(), ""]
     return "\n".join(lines).rstrip() + "\n"
