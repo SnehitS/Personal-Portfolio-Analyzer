@@ -81,3 +81,28 @@ def next_earnings(symbol: str, today: date | None = None) -> date | None:
         return None
     upcoming = sorted(d for d in dates if isinstance(d, (date, datetime)) and d >= today)
     return upcoming[0] if upcoming else None
+
+
+def chain_near(symbol: str, avoid: date | None = None, cfg: dict | None = None,
+               today: date | None = None):
+    """The chain for the expiry about a month out (see option_ideas.pick_expiry), or None."""
+    from src.portfolio_analysis.option_ideas import Chain, pick_expiry
+
+    today = today or date.today()
+    t = yf.Ticker(symbol)
+    try:
+        expiries = [date.fromisoformat(e) for e in t.options]
+    except Exception as exc:
+        log.warning("no option chain for %s: %s", symbol, exc)
+        return None
+    picked = pick_expiry(expiries, today, avoid, cfg)
+    spot = spot_price(t)
+    if picked is None or not spot:
+        return None
+    expiration, spans = picked
+    try:
+        chain = t.option_chain(expiration.isoformat())
+    except Exception as exc:
+        log.warning("%s %s chain failed: %s", symbol, expiration, exc)
+        return None
+    return Chain(expiration, spans, chain.calls, chain.puts, spot)
