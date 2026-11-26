@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS iv_history (
     ticker TEXT NOT NULL, date TEXT NOT NULL, iv30 REAL, spot REAL,
     PRIMARY KEY (ticker, date)
 );
+CREATE TABLE IF NOT EXISTS market_odds (
+    day TEXT NOT NULL, event TEXT NOT NULL, outcome TEXT NOT NULL, strike REAL, prob REAL,
+    PRIMARY KEY (day, event, outcome)
+);
 """
 
 
@@ -371,3 +375,29 @@ def mark_fetched(key: str, when: datetime, db_path: Path = DEFAULT_DB) -> None:
     with connect(db_path) as conn:
         conn.execute("INSERT OR REPLACE INTO fetch_log (key, fetched_at) VALUES (?, ?)",
                      (key, _utc_iso(when)))
+
+
+def save_odds(events: list, day: date, db_path: Path = DEFAULT_DB) -> None:
+    """One reading per event outcome per day (OddsEvent list); a later run replaces it."""
+    with connect(db_path) as conn:
+        for e in events:
+            conn.execute("DELETE FROM market_odds WHERE day = ? AND event = ?",
+                         (day.isoformat(), e.event))
+            conn.executemany(
+                "INSERT INTO market_odds (day, event, outcome, strike, prob) VALUES (?, ?, ?, ?, ?)",
+                [(day.isoformat(), e.event, q.outcome, q.strike, q.prob) for q in e.quotes])
+
+
+def load_odds_before(event: str, day: date, db_path: Path = DEFAULT_DB):
+    """The latest stored quotes for an event on or before `day`, as (day, [Quote]), or None."""
+    from src.portfolio_analysis.odds import Quote
+
+    with connect(db_path) as conn:
+        row = conn.execute("SELECT MAX(day) AS day FROM market_odds WHERE event = ? AND day <= ?",
+                           (event, day.isoformat())).fetchone()
+        if row is None or row["day"] is None:
+            return None
+        rows = conn.execute("SELECT outcome, strike, prob FROM market_odds"
+                            " WHERE event = ? AND day = ?", (event, row["day"])).fetchall()
+    return (date.fromisoformat(row["day"]),
+            [Quote(r["outcome"], r["prob"], r["strike"]) for r in rows])
