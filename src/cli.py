@@ -14,6 +14,7 @@
     python -m src.cli macro                       # rates and inflation backdrop
     python -m src.cli earnings-call NFLX          # summary of the latest earnings call
     python -m src.cli ideas                       # add / hold / trim / sell, watchlist, cash plan
+    python -m src.cli odds                        # Fed, CPI and recession odds from Kalshi
     python -m src.cli run                         # all of the above, then notify (for the scheduler)
     python -m src.cli notify --test               # check your notification channels
 """
@@ -886,6 +887,31 @@ def _options_section(found: list, watch: list, candidates: list[Holding],
     return option_ideas.render(calls, puts, too_big)
 
 
+def _odds_section(cfg: dict, today: date) -> str:
+    """Prediction market odds for the series in settings, stored so the next run can show
+    how they moved."""
+    from src.data_pipeline import kalshi
+    from src.portfolio_analysis import odds
+
+    c = cfg.get("odds") or {}
+    db = Path(cfg["database"])
+    events = []
+    with console.status("Prediction market odds from Kalshi..."):
+        for series in c.get("series") or []:
+            events += kalshi.fetch_series(series, c.get("events", 2))
+    if events:
+        storage.save_odds(events, today, db)
+    back = today - timedelta(days=c.get("compare_days", 7))
+    before = {e.event: b for e in events if (b := storage.load_odds_before(e.event, back, db))}
+    return odds.render(events, before, today)
+
+
+def cmd_odds(args, cfg: dict) -> None:
+    from rich.markdown import Markdown
+
+    console.print(Markdown(_odds_section(cfg, date.today())))
+
+
 def _safe_section(name: str, build) -> str:
     """A report section that can't take the rest of the report down with it."""
     try:
@@ -922,6 +948,8 @@ def cmd_ideas(args, cfg: dict):
     if not getattr(args, "no_options", False):
         sections.append(_safe_section("Options", lambda: _options_section(
             found, watch, candidates, snap, plan.investable, cfg, today)))
+    if not args.ticker and not getattr(args, "no_odds", False):
+        sections.append(_safe_section("Market odds", lambda: _odds_section(cfg, today)))
     markdown = ideas.render(found, snap, today, None if args.ticker else plan,
                             watch or (None if args.ticker else []), sections)
     if getattr(args, "print", True):
@@ -1014,7 +1042,11 @@ def main() -> None:
     idea = sub.add_parser("ideas", help="add / hold / trim / sell ideas for your holdings")
     idea.add_argument("ticker", nargs="*", help="only show these (default: all, and save)")
     idea.add_argument("--no-options", action="store_true", help="skip covered calls and puts")
+    idea.add_argument("--no-odds", action="store_true", help="skip prediction market odds")
     idea.set_defaults(func=cmd_ideas)
+
+    odds = sub.add_parser("odds", help="prediction market odds for rates, inflation and more")
+    odds.set_defaults(func=cmd_odds)
 
     run = sub.add_parser("run", help="snapshot, news, reports, alerts and ideas, then notify")
     run.add_argument("--force", action="store_true", help="run on weekends too")
